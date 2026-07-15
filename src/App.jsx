@@ -237,7 +237,7 @@ function Tracker({ session }) {
 
       {/* tabs */}
       <div style={{ display: "flex", gap: 6, marginBottom: 14, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 4 }}>
-        {[["budget", "Бюджет"], ["chart", "График"]].map(([k, lbl]) => (
+        {[["budget", "Бюджет"], ["chart", "График"], ["history", "История"]].map(([k, lbl]) => (
           <button key={k} onClick={() => setTab(k)} style={{
             flex: 1, padding: "9px", borderRadius: 9, fontWeight: 600, fontSize: 14,
             background: tab === k ? C.blue : "transparent", color: tab === k ? "#fff" : C.muted,
@@ -348,8 +348,10 @@ function Tracker({ session }) {
             </div>
           </div>
         </>
-      ) : (
+      ) : tab === "chart" ? (
         <ChartView config={config} entries={entries} m={m} />
+      ) : (
+        <HistoryView config={config} entries={entries} m={m} onRemove={removeEntry} />
       )}
 
       <div style={{ textAlign: "center", color: C.muted, fontSize: 11, marginTop: 16, lineHeight: 1.5 }}>
@@ -486,6 +488,78 @@ function CumulativeChart({ data, target, today }) {
         <circle key={p.k} cx={xFor(p.k)} cy={yFor(p.v)} r={p.k === n - 1 ? 3 : 1.5} fill={actualColor} />
       ))}
     </svg>
+  );
+}
+
+// ---------- history page (expandable, delete any entry) ----------
+function HistoryView({ config, entries, m, onRemove }) {
+  const [open, setOpen] = useState(m.today);
+
+  const days = useMemo(() => {
+    const map = {};
+    entries.forEach((e) => {
+      if (!map[e.date]) map[e.date] = [];
+      map[e.date].push(e);
+    });
+    return Object.entries(map)
+      .map(([date, list]) => ({
+        date,
+        total: list.reduce((s, e) => s + e.amount, 0),
+        list: [...list].sort((a, b) => (a.id < b.id ? 1 : -1)),
+      }))
+      .sort((a, b) => (a.date < b.date ? 1 : -1));
+  }, [entries]);
+
+  const target = m.baselineDaily;
+
+  if (days.length === 0) {
+    return (
+      <div style={panel}>
+        <div style={label}>История</div>
+        <div style={{ color: C.muted, fontSize: 14, padding: "24px 0", textAlign: "center" }}>
+          Пока пусто. Записи появятся здесь по дням.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={panel}>
+      <div style={{ ...label, marginBottom: 10 }}>История · нажми на день</div>
+      {days.map((d) => {
+        const isOpen = open === d.date;
+        const over = d.total > target;
+        return (
+          <div key={d.date} style={{ borderTop: `1px solid ${C.border}` }}>
+            <button onClick={() => setOpen(isOpen ? null : d.date)} style={{
+              width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between",
+              padding: "12px 0", background: "none", color: C.text,
+            }}>
+              <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ color: C.muted, fontSize: 10, transform: isOpen ? "rotate(90deg)" : "none", transition: "transform .15s" }}>▶</span>
+                <span style={{ fontSize: 14 }}>
+                  {prettyDate(d.date)}{d.date === m.today ? " · сегодня" : ""}
+                </span>
+              </span>
+              <span style={{ fontFamily: mono, fontSize: 15, color: d.total === 0 ? C.muted : over ? C.amber : C.green }}>
+                {eur(d.total)}
+              </span>
+            </button>
+            {isOpen && (
+              <div style={{ paddingBottom: 10 }}>
+                {d.list.map((e) => (
+                  <div key={e.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
+                    padding: "8px 0 8px 22px" }}>
+                    <span style={{ fontFamily: mono, fontSize: 15 }}>{eur(e.amount)}</span>
+                    <button onClick={() => onRemove(e.id)} style={delBtn}>удалить</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
