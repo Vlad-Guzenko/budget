@@ -75,9 +75,8 @@ function Auth() {
   return (
     <div style={{ ...wrap, minHeight: "100vh", justifyContent: "center" }}>
       <div style={{ marginBottom: 22, textAlign: "center" }}>
-        <div style={{ fontSize: 34 }}>🏍️</div>
-        <div style={{ fontSize: 22, fontWeight: 700, marginTop: 6 }}>Мотофонд</div>
-        <div style={{ fontSize: 13, color: C.muted, marginTop: 4 }}>дневной бюджет до зарплаты</div>
+        <div style={{ fontSize: 22, fontWeight: 700 }}>Бюджет</div>
+        <div style={{ fontSize: 13, color: C.muted, marginTop: 4 }}>дневной расчёт до зарплаты</div>
       </div>
       <div style={panel}>
         <input type="email" placeholder="e-mail" value={email} autoCapitalize="none"
@@ -337,7 +336,7 @@ function Tracker({ session }) {
 
           {/* moto fund */}
           <div style={{ ...panel, marginTop: 12, background: "linear-gradient(135deg,#1a2740,#191C22)", borderColor: "#243350" }}>
-            <div style={label}>Мотофонд 🏍️</div>
+            <div style={label}>Накопления</div>
             <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>прогноз к зарплате при текущем темпе</div>
             <div style={{ fontFamily: mono, fontWeight: 700, fontSize: 38, color: C.green, marginTop: 8, letterSpacing: -0.5 }}>
               {eur(m.projectedSavings)}
@@ -571,8 +570,6 @@ function MiniStat({ label, value, color }) {
     </div>
   );
 }
-
-
 function Field({ label, value, onChange, type = "number" }) {
   return (
     <div style={{ marginBottom: 12 }}>
