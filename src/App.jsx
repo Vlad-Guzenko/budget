@@ -29,23 +29,21 @@ const addDays = (iso, n) => {
 const RU_MONTHS = ["янв","фев","мар","апр","мая","июн","июл","авг","сен","окт","ноя","дек"];
 const prettyDate = (iso) => { const d = dateFromISO(iso); return `${d.getDate()} ${RU_MONTHS[d.getMonth()]}`; };
 const eur = (v) => (v < 0 ? "-" : "") + Math.abs(v).toFixed(2).replace(".", ",") + " €";
+const signEur = (v) => (v > 0 ? "+" : v < 0 ? "-" : "") + Math.abs(v).toFixed(2).replace(".", ",") + " €";
 
 // =====================================================================
 export default function App() {
-  const [session, setSession] = useState(undefined); // undefined=loading, null=logged out
-
+  const [session, setSession] = useState(undefined);
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session ?? null));
     const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s ?? null));
     return () => sub.subscription.unsubscribe();
   }, []);
-
   if (session === undefined) return <Splash />;
   if (session === null) return <Auth />;
   return <Tracker session={session} />;
 }
 
-// ---------------------------------------------------------------------
 function Splash() {
   return (
     <div style={{ ...wrap, alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
@@ -54,14 +52,12 @@ function Splash() {
   );
 }
 
-// ---------------------------------------------------------------------
 function Auth() {
-  const [mode, setMode] = useState("login"); // login | signup
+  const [mode, setMode] = useState("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
-
   const submit = async () => {
     setBusy(true); setMsg("");
     try {
@@ -73,11 +69,9 @@ function Auth() {
         if (error) throw error;
         setMsg("Проверь почту для подтверждения (если включено), затем войди.");
       }
-    } catch (e) {
-      setMsg(e.message || "Ошибка");
-    } finally { setBusy(false); }
+    } catch (e) { setMsg(e.message || "Ошибка"); }
+    finally { setBusy(false); }
   };
-
   return (
     <div style={{ ...wrap, minHeight: "100vh", justifyContent: "center" }}>
       <div style={{ marginBottom: 22, textAlign: "center" }}>
@@ -115,6 +109,7 @@ function Tracker({ session }) {
   const [showSettings, setShowSettings] = useState(false);
   const [draft, setDraft] = useState(DEFAULT_CONFIG);
   const [saving, setSaving] = useState(false);
+  const [tab, setTab] = useState("budget"); // budget | chart
 
   const mapConfig = (row) => ({
     livingBudget: Number(row.living_budget), totalDays: row.total_days,
@@ -122,7 +117,6 @@ function Tracker({ session }) {
   });
 
   const load = useCallback(async () => {
-    // config
     const { data: cfg } = await supabase.from("config").select("*").eq("user_id", uid).maybeSingle();
     if (cfg) setConfig(mapConfig(cfg));
     else {
@@ -133,12 +127,10 @@ function Tracker({ session }) {
       });
       setConfig(DEFAULT_CONFIG);
     }
-    // entries
     const { data: rows } = await supabase.from("entries").select("*").eq("user_id", uid).order("created_at", { ascending: false });
     setEntries((rows ?? []).map((r) => ({ id: r.id, date: r.spent_on, amount: Number(r.amount) })));
     setLoaded(true);
   }, [uid]);
-
   useEffect(() => { load(); }, [load]);
 
   // ----- math -----
@@ -148,6 +140,8 @@ function Tracker({ session }) {
     const todayIndex = Math.max(0, Math.min(idxRaw, config.totalDays - 1));
     const daysRemaining = Math.max(1, config.totalDays - todayIndex);
     const completedDays = todayIndex;
+    const daysElapsedInclusive = todayIndex + 1;
+    const baselineDaily = config.livingBudget / config.totalDays;
 
     const spentToday = entries.filter((e) => e.date === today).reduce((s, e) => s + e.amount, 0);
     const spentBeforeToday = entries.filter((e) => e.date < today).reduce((s, e) => s + e.amount, 0);
@@ -156,6 +150,18 @@ function Tracker({ session }) {
     const remainingBudget = config.livingBudget - totalSpent;
     const allowanceToday = (config.livingBudget - spentBeforeToday) / daysRemaining;
     const leftToday = allowanceToday - spentToday;
+
+    // прогноз на завтра: как изменится дневной лимит, если день закрыть с текущими тратами
+    const daysAfterToday = daysRemaining - 1;
+    let allowanceTomorrow = null, tomorrowDelta = null;
+    if (daysAfterToday >= 1) {
+      allowanceTomorrow = (config.livingBudget - spentBeforeToday - spentToday) / daysAfterToday;
+      tomorrowDelta = allowanceTomorrow - allowanceToday;
+    }
+
+    // опережение/отставание от ровного плана
+    const expectedByNow = baselineDaily * daysElapsedInclusive;
+    const aheadAmount = expectedByNow - totalSpent; // >0 = экономишь
 
     let projectedTotal;
     if (completedDays >= 1) {
@@ -168,8 +174,9 @@ function Tracker({ session }) {
     const status = ratio > 1 ? "red" : ratio > 0.75 ? "amber" : "green";
     const endISO = addDays(config.startISO, config.totalDays - 1);
 
-    return { today, daysRemaining, spentToday, totalSpent, remainingBudget,
-      allowanceToday, leftToday, projectedSavings, projectedTotal, ratio, status, endISO };
+    return { today, todayIndex, daysRemaining, spentToday, totalSpent, remainingBudget,
+      allowanceToday, leftToday, allowanceTomorrow, tomorrowDelta, daysAfterToday,
+      aheadAmount, baselineDaily, projectedSavings, projectedTotal, ratio, status, endISO };
   }, [config, entries]);
 
   const statusColor = { green: C.green, amber: C.amber, red: C.red }[m.status];
@@ -186,7 +193,6 @@ function Tracker({ session }) {
     setEntries((prev) => prev.map((e) => e.id === optimistic.id
       ? { id: data.id, date: data.spent_on, amount: Number(data.amount) } : e));
   };
-
   const removeEntry = async (id) => {
     setEntries((prev) => prev.filter((e) => e.id !== id));
     await supabase.from("entries").delete().eq("id", id);
@@ -210,18 +216,13 @@ function Tracker({ session }) {
   };
 
   const todayEntries = entries.filter((e) => e.date === m.today);
-  const pastByDay = useMemo(() => {
-    const map = {};
-    entries.filter((e) => e.date !== m.today).forEach((e) => { map[e.date] = (map[e.date] || 0) + e.amount; });
-    return Object.entries(map).sort((a, b) => (a[0] < b[0] ? 1 : -1));
-  }, [entries, m.today]);
 
   if (!loaded) return <Splash />;
 
   return (
     <div style={wrap}>
       {/* header */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
         <div>
           <div style={{ fontSize: 11, letterSpacing: 2, color: C.muted, textTransform: "uppercase" }}>Бюджет до зарплаты</div>
           <div style={{ fontSize: 13, marginTop: 3 }}>
@@ -234,85 +235,121 @@ function Tracker({ session }) {
         </div>
       </div>
 
-      {/* HERO */}
-      <div style={{ ...panel, padding: "22px 20px 20px" }}>
-        <div style={label}>Осталось на сегодня</div>
-        <div style={{ fontFamily: mono, fontWeight: 700, fontSize: 52, lineHeight: 1.05,
-          color: m.leftToday < 0 ? C.red : C.text, marginTop: 6, letterSpacing: -1 }}>
-          {eur(m.leftToday)}
-        </div>
-        <div style={{ fontSize: 13, color: C.muted, marginTop: 4 }}>
-          из {eur(m.allowanceToday)} на день · потрачено {eur(m.spentToday)}
-        </div>
-        <div style={{ marginTop: 16, height: 12, background: C.surface2, borderRadius: 20, overflow: "hidden", border: `1px solid ${C.border}` }}>
-          <div style={{ height: "100%", width: `${Math.min(m.ratio, 1) * 100}%`, background: statusColor,
-            borderRadius: 20, transition: "width .5s ease", animation: "fillbar .6s ease" }} />
-        </div>
-        <div style={{ display: "flex", justifyContent: "space-between", marginTop: 7, fontSize: 11, fontFamily: mono, color: C.muted }}>
-          <span>0 €</span>
-          <span style={{ color: statusColor }}>
-            {m.status === "red" ? "перебор за день" : m.status === "amber" ? "почти лимит" : "в норме"}
-          </span>
-          <span>{eur(m.allowanceToday)}</span>
-        </div>
+      {/* tabs */}
+      <div style={{ display: "flex", gap: 6, marginBottom: 14, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 4 }}>
+        {[["budget", "Бюджет"], ["chart", "График"]].map(([k, lbl]) => (
+          <button key={k} onClick={() => setTab(k)} style={{
+            flex: 1, padding: "9px", borderRadius: 9, fontWeight: 600, fontSize: 14,
+            background: tab === k ? C.blue : "transparent", color: tab === k ? "#fff" : C.muted,
+          }}>{lbl}</button>
+        ))}
       </div>
 
-      {/* log */}
-      <div style={{ ...panel, marginTop: 12 }}>
-        <div style={{ ...label, marginBottom: 10 }}>Записать трату</div>
-        <div style={{ display: "flex", gap: 8 }}>
-          <input type="number" inputMode="decimal" placeholder="0,00" value={input}
-            onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addSpend(input)}
-            style={{ ...inputStyle, flex: 1, fontSize: 20, fontWeight: 600 }} />
-          <button onClick={() => addSpend(input)} style={{ ...primaryBtn, padding: "0 20px" }}>+ Добавить</button>
-        </div>
-        <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
-          {[3, 5, 10, 15].map((v) => (
-            <button key={v} className="chip" onClick={() => addSpend(v)} style={chip}>+{v} €</button>
-          ))}
-        </div>
-      </div>
-
-      {/* today */}
-      {todayEntries.length > 0 && (
-        <div style={{ ...panel, marginTop: 12 }}>
-          <div style={{ ...label, marginBottom: 10 }}>Сегодня · {eur(m.spentToday)}</div>
-          {todayEntries.map((e) => (
-            <div key={e.id} style={rowItem}>
-              <span style={{ fontFamily: mono, fontSize: 16 }}>{eur(e.amount)}</span>
-              <button onClick={() => removeEntry(e.id)} style={delBtn}>удалить</button>
+      {tab === "budget" ? (
+        <>
+          {/* HERO */}
+          <div style={{ ...panel, padding: "22px 20px 20px" }}>
+            <div style={label}>Осталось на сегодня</div>
+            <div style={{ fontFamily: mono, fontWeight: 700, fontSize: 52, lineHeight: 1.05,
+              color: m.leftToday < 0 ? C.red : C.text, marginTop: 6, letterSpacing: -1 }}>
+              {eur(m.leftToday)}
             </div>
-          ))}
-        </div>
-      )}
+            <div style={{ fontSize: 13, color: C.muted, marginTop: 4 }}>
+              из {eur(m.allowanceToday)} на день · потрачено {eur(m.spentToday)}
+            </div>
+            <div style={{ marginTop: 16, height: 12, background: C.surface2, borderRadius: 20, overflow: "hidden", border: `1px solid ${C.border}` }}>
+              <div style={{ height: "100%", width: `${Math.min(m.ratio, 1) * 100}%`, background: statusColor,
+                borderRadius: 20, transition: "width .5s ease", animation: "fillbar .6s ease" }} />
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", marginTop: 7, fontSize: 11, fontFamily: mono, color: C.muted }}>
+              <span>0 €</span>
+              <span style={{ color: statusColor }}>
+                {m.status === "red" ? "перебор за день" : m.status === "amber" ? "почти лимит" : "в норме"}
+              </span>
+              <span>{eur(m.allowanceToday)}</span>
+            </div>
+          </div>
 
-      {/* moto fund */}
-      <div style={{ ...panel, marginTop: 12, background: "linear-gradient(135deg,#1a2740,#191C22)", borderColor: "#243350" }}>
-        <div style={label}>Мотофонд 🏍️</div>
-        <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>прогноз к зарплате при текущем темпе</div>
-        <div style={{ fontFamily: mono, fontWeight: 700, fontSize: 38, color: C.green, marginTop: 8, letterSpacing: -0.5 }}>
-          {eur(m.projectedSavings)}
-        </div>
-        <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
-          <MiniStat label="Осталось из 800" value={eur(m.remainingBudget)} color={m.remainingBudget < 0 ? C.red : C.text} />
-          <MiniStat label="Прогноз трат" value={eur(m.projectedTotal)} color={C.text} />
-        </div>
-      </div>
-
-      {/* history */}
-      {pastByDay.length > 0 && (
-        <div style={{ ...panel, marginTop: 12 }}>
-          <div style={{ ...label, marginBottom: 10 }}>История по дням</div>
-          {pastByDay.map(([date, amt]) => {
-            const over = amt > config.livingBudget / config.totalDays;
-            return (
-              <div key={date} style={rowItem}>
-                <span style={{ color: C.muted, fontSize: 14 }}>{prettyDate(date)}</span>
-                <span style={{ fontFamily: mono, fontSize: 15, color: over ? C.amber : C.green }}>{eur(amt)}</span>
+          {/* прогноз на завтра */}
+          {m.tomorrowDelta !== null && (
+            <div style={{ ...panel, marginTop: 12, borderColor: m.tomorrowDelta >= 0 ? "#1e4d38" : "#4d2320" }}>
+              <div style={label}>Эффект на завтра</div>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginTop: 8 }}>
+                <div style={{ fontFamily: mono, fontWeight: 700, fontSize: 30,
+                  color: m.tomorrowDelta >= 0 ? C.green : C.red }}>
+                  {signEur(m.tomorrowDelta)}
+                </div>
+                <div style={{ fontSize: 13, color: C.muted }}>к каждому из оставшихся {m.daysAfterToday} дн.</div>
               </div>
-            );
-          })}
-        </div>
+              <div style={{ fontSize: 13, color: C.muted, marginTop: 6, lineHeight: 1.4 }}>
+                {m.tomorrowDelta >= 0
+                  ? `Сэкономленное сегодня поднимет дневной лимит до ${eur(m.allowanceTomorrow)}.`
+                  : `Перерасход снизит завтрашний лимит до ${eur(m.allowanceTomorrow)}.`}
+              </div>
+            </div>
+          )}
+
+          {/* опережение плана */}
+          <div style={{ ...panel, marginTop: 12 }}>
+            <div style={label}>Относительно ровного плана</div>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginTop: 8 }}>
+              <div style={{ fontFamily: mono, fontWeight: 700, fontSize: 26,
+                color: m.aheadAmount >= 0 ? C.green : C.red }}>
+                {signEur(m.aheadAmount)}
+              </div>
+              <div style={{ fontSize: 13, color: C.muted }}>
+                {m.aheadAmount >= 0 ? "экономия к сегодняшнему дню" : "перерасход к сегодняшнему дню"}
+              </div>
+            </div>
+          </div>
+
+          {/* log */}
+          <div style={{ ...panel, marginTop: 12 }}>
+            <div style={{ ...label, marginBottom: 10 }}>Записать трату</div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <input type="number" inputMode="decimal" placeholder="0,00" value={input}
+                onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addSpend(input)}
+                style={{ ...inputStyle, flex: 1, fontSize: 20, fontWeight: 600 }} />
+              <button onClick={() => addSpend(input)} style={{ ...primaryBtn, padding: "0 20px" }}>+ Добавить</button>
+            </div>
+            <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+              {[3, 5, 10, 15].map((v) => (
+                <button key={v} className="chip" onClick={() => addSpend(v)} style={chip}>+{v} €</button>
+              ))}
+            </div>
+            <div style={{ fontSize: 12, color: C.muted, marginTop: 10 }}>
+              Вносить можно сколько угодно раз за день — суммируется.
+            </div>
+          </div>
+
+          {/* today */}
+          {todayEntries.length > 0 && (
+            <div style={{ ...panel, marginTop: 12 }}>
+              <div style={{ ...label, marginBottom: 10 }}>Сегодня · {eur(m.spentToday)}</div>
+              {todayEntries.map((e) => (
+                <div key={e.id} style={rowItem}>
+                  <span style={{ fontFamily: mono, fontSize: 16 }}>{eur(e.amount)}</span>
+                  <button onClick={() => removeEntry(e.id)} style={delBtn}>удалить</button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* moto fund */}
+          <div style={{ ...panel, marginTop: 12, background: "linear-gradient(135deg,#1a2740,#191C22)", borderColor: "#243350" }}>
+            <div style={label}>Мотофонд 🏍️</div>
+            <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>прогноз к зарплате при текущем темпе</div>
+            <div style={{ fontFamily: mono, fontWeight: 700, fontSize: 38, color: C.green, marginTop: 8, letterSpacing: -0.5 }}>
+              {eur(m.projectedSavings)}
+            </div>
+            <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
+              <MiniStat label="Осталось из 800" value={eur(m.remainingBudget)} color={m.remainingBudget < 0 ? C.red : C.text} />
+              <MiniStat label="Прогноз трат" value={eur(m.projectedTotal)} color={C.text} />
+            </div>
+          </div>
+        </>
+      ) : (
+        <ChartView config={config} entries={entries} m={m} />
       )}
 
       <div style={{ textAlign: "center", color: C.muted, fontSize: 11, marginTop: 16, lineHeight: 1.5 }}>
@@ -338,6 +375,117 @@ function Tracker({ session }) {
         </div>
       )}
     </div>
+  );
+}
+
+// ---------- chart page ----------
+function ChartView({ config, entries, m }) {
+  const data = useMemo(() => {
+    const arr = [];
+    for (let i = 0; i <= m.todayIndex; i++) {
+      const date = addDays(config.startISO, i);
+      const spent = entries.filter((e) => e.date === date).reduce((s, e) => s + e.amount, 0);
+      arr.push({ i, date, spent });
+    }
+    return arr;
+  }, [config, entries, m.todayIndex]);
+
+  const target = m.baselineDaily;
+  const maxVal = Math.max(target * 1.4, ...data.map((d) => d.spent), 1);
+
+  const W = 320, H = 180, padL = 8, padR = 8, padT = 10, padB = 22;
+  const innerW = W - padL - padR, innerH = H - padT - padB;
+  const n = data.length;
+  const gap = 3;
+  const bw = n > 0 ? Math.max(3, innerW / n - gap) : 0;
+  const yFor = (v) => padT + innerH - (v / maxVal) * innerH;
+  const targetY = yFor(target);
+
+  const totalSpent = data.reduce((s, d) => s + d.spent, 0);
+  const daysCounted = data.length;
+  const avg = daysCounted ? totalSpent / daysCounted : 0;
+
+  return (
+    <>
+      <div style={{ ...panel }}>
+        <div style={label}>Расходы по дням</div>
+        <div style={{ fontSize: 12, color: C.muted, marginTop: 3, marginBottom: 12 }}>
+          пунктир — ровный лимит {eur(target)}/день
+        </div>
+        {n === 0 ? (
+          <div style={{ color: C.muted, fontSize: 14, padding: "24px 0", textAlign: "center" }}>
+            Пока нет данных. Внеси первую трату.
+          </div>
+        ) : (
+          <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: "auto", display: "block" }}>
+            {/* target line */}
+            <line x1={padL} y1={targetY} x2={W - padR} y2={targetY}
+              stroke={C.blue} strokeWidth="1" strokeDasharray="4 4" opacity="0.7" />
+            {data.map((d, k) => {
+              const x = padL + k * (bw + gap);
+              const y = yFor(d.spent);
+              const h = padT + innerH - y;
+              const over = d.spent > target;
+              const col = d.spent === 0 ? C.green : over ? C.amber : C.green;
+              return (
+                <g key={d.date}>
+                  <rect x={x} y={d.spent === 0 ? padT + innerH - 2 : y} width={bw}
+                    height={d.spent === 0 ? 2 : Math.max(h, 1)} rx="2" fill={col}
+                    opacity={d.date === m.today ? 1 : 0.85} />
+                  {(k === 0 || k === n - 1 || k % Math.ceil(n / 6) === 0) && (
+                    <text x={x + bw / 2} y={H - 8} fill={C.muted} fontSize="8"
+                      textAnchor="middle" fontFamily={mono}>{dateFromISO(d.date).getDate()}</text>
+                  )}
+                </g>
+              );
+            })}
+          </svg>
+        )}
+        <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
+          <MiniStat label="Всего потрачено" value={eur(totalSpent)} color={C.text} />
+          <MiniStat label="Среднее в день" value={eur(avg)} color={avg > target ? C.amber : C.green} />
+        </div>
+      </div>
+
+      {/* cumulative vs ideal */}
+      <div style={{ ...panel, marginTop: 12 }}>
+        <div style={label}>Накопительно против плана</div>
+        <div style={{ fontSize: 12, color: C.muted, marginTop: 3, marginBottom: 12 }}>
+          синяя — план, зелёная/красная — факт
+        </div>
+        <CumulativeChart data={data} target={target} today={m.today} />
+      </div>
+    </>
+  );
+}
+
+function CumulativeChart({ data, target, today }) {
+  const W = 320, H = 150, padL = 8, padR = 8, padT = 10, padB = 20;
+  const innerW = W - padL - padR, innerH = H - padT - padB;
+  const n = data.length;
+  if (n === 0) return <div style={{ color: C.muted, fontSize: 14, padding: "20px 0", textAlign: "center" }}>Нет данных</div>;
+
+  let cum = 0;
+  const actual = data.map((d, k) => { cum += d.spent; return { k, v: cum }; });
+  const idealMax = target * n;
+  const actualMax = cum;
+  const maxV = Math.max(idealMax, actualMax, 1);
+  const xFor = (k) => padL + (n === 1 ? innerW / 2 : (k / (n - 1)) * innerW);
+  const yFor = (v) => padT + innerH - (v / maxV) * innerH;
+
+  const idealPath = `M ${xFor(0)} ${yFor(target)} L ${xFor(n - 1)} ${yFor(idealMax)}`;
+  const actualPts = actual.map((p) => `${xFor(p.k)},${yFor(p.v)}`).join(" ");
+  const actualColor = actualMax <= target * n ? C.green : C.red;
+
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: "auto", display: "block" }}>
+      <line x1={padL} y1={yFor(0)} x2={W - padR} y2={yFor(0)} stroke={C.border} strokeWidth="1" />
+      <path d={idealPath} stroke={C.blue} strokeWidth="1.5" fill="none" strokeDasharray="4 4" opacity="0.7" />
+      <polyline points={actualPts} stroke={actualColor} strokeWidth="2" fill="none" strokeLinejoin="round" strokeLinecap="round" />
+      {actual.map((p) => (
+        <circle key={p.k} cx={xFor(p.k)} cy={yFor(p.v)} r={p.k === n - 1 ? 3 : 1.5} fill={actualColor} />
+      ))}
+    </svg>
   );
 }
 
