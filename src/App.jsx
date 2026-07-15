@@ -571,6 +571,8 @@ function MiniStat({ label, value, color }) {
     </div>
   );
 }
+
+
 function Field({ label, value, onChange, type = "number" }) {
   return (
     <div style={{ marginBottom: 12 }}>
