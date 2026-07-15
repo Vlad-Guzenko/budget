@@ -1,6 +1,6 @@
 {
-  "name": "Мотофонд · бюджет",
-  "short_name": "Мотофонд",
+  "name": "Бюджет",
+  "short_name": "Бюджет",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#101215",

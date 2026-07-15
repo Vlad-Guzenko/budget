@@ -490,71 +490,93 @@ function CumulativeChart({ data, target, today }) {
   );
 }
 
-// ---------- history page (expandable, delete any entry) ----------
+// ---------- history page (grouped by week, expandable days, delete any entry) ----------
 function HistoryView({ config, entries, m, onRemove }) {
   const [open, setOpen] = useState(m.today);
+  const weeklyTarget = m.baselineDaily * 7;
 
-  const days = useMemo(() => {
-    const map = {};
-    entries.forEach((e) => {
-      if (!map[e.date]) map[e.date] = [];
-      map[e.date].push(e);
-    });
-    return Object.entries(map)
-      .map(([date, list]) => ({
-        date,
-        total: list.reduce((s, e) => s + e.amount, 0),
-        list: [...list].sort((a, b) => (a.id < b.id ? 1 : -1)),
+  const weeks = useMemo(() => {
+    const byDate = {};
+    entries.forEach((e) => { (byDate[e.date] ||= []).push(e); });
+    const days = Object.entries(byDate).map(([date, list]) => ({
+      date,
+      weekIdx: Math.floor(daysBetween(config.startISO, date) / 7),
+      total: list.reduce((s, e) => s + e.amount, 0),
+      list: [...list].sort((a, b) => (a.id < b.id ? 1 : -1)),
+    }));
+    const wk = {};
+    days.forEach((d) => { (wk[d.weekIdx] ||= []).push(d); });
+    return Object.entries(wk)
+      .map(([idx, dayList]) => ({
+        idx: Number(idx),
+        days: dayList.sort((a, b) => (a.date < b.date ? 1 : -1)),
+        total: dayList.reduce((s, d) => s + d.total, 0),
       }))
-      .sort((a, b) => (a.date < b.date ? 1 : -1));
-  }, [entries]);
+      .sort((a, b) => b.idx - a.idx);
+  }, [entries, config.startISO]);
 
-  const target = m.baselineDaily;
-
-  if (days.length === 0) {
+  if (weeks.length === 0) {
     return (
       <div style={panel}>
         <div style={label}>История</div>
         <div style={{ color: C.muted, fontSize: 14, padding: "24px 0", textAlign: "center" }}>
-          Пока пусто. Записи появятся здесь по дням.
+          Пока пусто. Записи появятся здесь по неделям.
         </div>
       </div>
     );
   }
 
   return (
-    <div style={panel}>
-      <div style={{ ...label, marginBottom: 10 }}>История · нажми на день</div>
-      {days.map((d) => {
-        const isOpen = open === d.date;
-        const over = d.total > target;
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      {weeks.map((w) => {
+        const wStart = addDays(config.startISO, w.idx * 7);
+        const wEnd = addDays(config.startISO, w.idx * 7 + 6);
+        const over = w.total > weeklyTarget;
         return (
-          <div key={d.date} style={{ borderTop: `1px solid ${C.border}` }}>
-            <button onClick={() => setOpen(isOpen ? null : d.date)} style={{
-              width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between",
-              padding: "12px 0", background: "none", color: C.text,
-            }}>
-              <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <span style={{ color: C.muted, fontSize: 10, transform: isOpen ? "rotate(90deg)" : "none", transition: "transform .15s" }}>▶</span>
-                <span style={{ fontSize: 14 }}>
-                  {prettyDate(d.date)}{d.date === m.today ? " · сегодня" : ""}
-                </span>
-              </span>
-              <span style={{ fontFamily: mono, fontSize: 15, color: d.total === 0 ? C.muted : over ? C.amber : C.green }}>
-                {eur(d.total)}
-              </span>
-            </button>
-            {isOpen && (
-              <div style={{ paddingBottom: 10 }}>
-                {d.list.map((e) => (
-                  <div key={e.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
-                    padding: "8px 0 8px 22px" }}>
-                    <span style={{ fontFamily: mono, fontSize: 15 }}>{eur(e.amount)}</span>
-                    <button onClick={() => onRemove(e.id)} style={delBtn}>удалить</button>
-                  </div>
-                ))}
+          <div key={w.idx} style={panel}>
+            <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 4 }}>
+              <div style={label}>Неделя {w.idx + 1}</div>
+              <div style={{ fontFamily: mono, fontSize: 18, fontWeight: 700, color: over ? C.amber : C.green }}>
+                {eur(w.total)}
               </div>
-            )}
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: C.muted, marginBottom: 6 }}>
+              <span>{prettyDate(wStart)} – {prettyDate(wEnd)}</span>
+              <span>лимит {eur(weeklyTarget)}</span>
+            </div>
+
+            {w.days.map((d) => {
+              const isOpen = open === d.date;
+              const dOver = d.total > m.baselineDaily;
+              return (
+                <div key={d.date} style={{ borderTop: `1px solid ${C.border}` }}>
+                  <button onClick={() => setOpen(isOpen ? null : d.date)} style={{
+                    width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between",
+                    padding: "11px 0", background: "none", color: C.text,
+                  }}>
+                    <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ color: C.muted, fontSize: 10, transform: isOpen ? "rotate(90deg)" : "none", transition: "transform .15s" }}>▶</span>
+                      <span style={{ fontSize: 14 }}>
+                        {prettyDate(d.date)}{d.date === m.today ? " · сегодня" : ""}
+                      </span>
+                    </span>
+                    <span style={{ fontFamily: mono, fontSize: 15, color: d.total === 0 ? C.muted : dOver ? C.amber : C.green }}>
+                      {eur(d.total)}
+                    </span>
+                  </button>
+                  {isOpen && (
+                    <div style={{ paddingBottom: 8 }}>
+                      {d.list.map((e) => (
+                        <div key={e.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 0 8px 22px" }}>
+                          <span style={{ fontFamily: mono, fontSize: 15 }}>{eur(e.amount)}</span>
+                          <button onClick={() => onRemove(e.id)} style={delBtn}>удалить</button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         );
       })}
