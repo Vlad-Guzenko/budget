@@ -3,9 +3,9 @@ import { supabase } from "./supabase.js";
 
 // ---------- palette (instrument cluster) ----------
 const C = {
-  bg: "#101215", surface: "#191C22", surface2: "#1F232B", border: "#282D36",
-  text: "#F0F2F5", muted: "#7C838E", blue: "#2F80FF",
-  green: "#23C87A", amber: "#FFB020", red: "#FF5A52",
+  bg: "#0B0D11", surface: "#15181E", surface2: "#1D212A", border: "#262B34",
+  text: "#EDEFF3", muted: "#868D98", faint: "#5A616B", blue: "#3B82F6",
+  green: "#2FBF87", amber: "#F5A623", red: "#F0655F",
 };
 const mono = "'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace";
 const sans = "'Inter', system-ui, -apple-system, sans-serif";
@@ -228,63 +228,66 @@ function Tracker({ session }) {
       </div>
 
       {/* tabs */}
-      <div style={{ display: "flex", gap: 6, marginBottom: 14, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 4 }}>
+      <div style={{ display: "flex", gap: 5, marginBottom: 14, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 13, padding: 4 }}>
         {[["budget", "Бюджет"], ["chart", "График"], ["history", "История"]].map(([k, lbl]) => (
           <button key={k} onClick={() => setTab(k)} style={{
-            flex: 1, padding: "9px", borderRadius: 9, fontWeight: 600, fontSize: 14,
+            flex: 1, padding: "10px", borderRadius: 10, fontWeight: 500, fontSize: 14,
             background: tab === k ? C.blue : "transparent", color: tab === k ? "#fff" : C.muted,
+            transition: "background .15s",
           }}>{lbl}</button>
         ))}
       </div>
 
       {tab === "budget" ? (
         <>
-          {/* HERO */}
-          <div style={{ ...panel, padding: "22px 20px 20px" }}>
-            <div style={label}>Осталось на сегодня</div>
-            <div style={{ fontFamily: mono, fontWeight: 700, fontSize: 50, lineHeight: 1.05,
-              color: m.leftToday < 0 ? C.red : C.text, marginTop: 6, letterSpacing: -1, whiteSpace: "nowrap" }}>
-              {eur(m.leftToday)}
+          {/* HERO — кольцо дня */}
+          <div style={{ ...panel, padding: "22px 20px 20px", display: "flex", flexDirection: "column", alignItems: "center" }}>
+            <div style={{ ...label, alignSelf: "flex-start" }}>Осталось на сегодня</div>
+
+            <div style={{ position: "relative", width: 184, height: 184, marginTop: 12 }}>
+              <svg width="184" height="184" viewBox="0 0 184 184">
+                <circle cx="92" cy="92" r="82" fill="none" stroke={C.surface2} strokeWidth="13" />
+                <circle cx="92" cy="92" r="82" fill="none" stroke={statusColor} strokeWidth="13"
+                  strokeLinecap="round" transform="rotate(-90 92 92)"
+                  strokeDasharray={2 * Math.PI * 82}
+                  strokeDashoffset={2 * Math.PI * 82 * (1 - Math.min(Math.max(m.ratio, 0), 1))}
+                  style={{ transition: "stroke-dashoffset .6s ease" }} />
+              </svg>
+              <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+                <div style={{ fontFamily: mono, fontWeight: 700, fontSize: 34, letterSpacing: -0.5,
+                  color: m.leftToday < 0 ? C.red : C.text, whiteSpace: "nowrap" }}>
+                  {eur(m.leftToday)}
+                </div>
+                <div style={{ fontSize: 11, color: statusColor, marginTop: 5 }}>
+                  {m.status === "red" ? "перебор" : m.status === "amber" ? "почти лимит" : "в норме"}
+                </div>
+                <div style={{ fontSize: 11, color: C.faint, marginTop: 2 }}>из {eur(m.todayAllowance)}</div>
+              </div>
             </div>
 
             {m.carryIn > 0.005 && (
-              <div style={{ display: "flex", alignItems: "center", gap: 11, marginTop: 12,
-                background: "#13251d", border: "1px solid #1e4d38", borderRadius: 12, padding: "11px 13px" }}>
-                <span style={{ fontFamily: mono, fontWeight: 700, fontSize: 22, color: C.green, whiteSpace: "nowrap" }}>
-                  +{eur(m.carryIn)}
-                </span>
-                <span style={{ fontSize: 13, color: "#9cc9b4", lineHeight: 1.3 }}>
-                  сэкономлено за прошлые дни — добавлено к лимиту
-                </span>
+              <div style={{ display: "flex", alignItems: "center", gap: 9, marginTop: 18, width: "100%",
+                background: "#12241C", border: "1px solid #1E4436", borderRadius: 12, padding: "10px 13px" }}>
+                <span style={{ fontFamily: mono, fontWeight: 700, fontSize: 20, color: C.green, whiteSpace: "nowrap" }}>+{eur(m.carryIn)}</span>
+                <span style={{ fontSize: 12.5, color: "#8FBFA8", lineHeight: 1.3 }}>сэкономлено — добавлено к лимиту</span>
               </div>
             )}
             {m.carryIn < -0.005 && (
-              <div style={{ display: "flex", alignItems: "center", gap: 11, marginTop: 12,
-                background: "#251514", border: "1px solid #4d2320", borderRadius: 12, padding: "11px 13px" }}>
-                <span style={{ fontFamily: mono, fontWeight: 700, fontSize: 22, color: C.red, whiteSpace: "nowrap" }}>
-                  {eur(m.carryIn)}
-                </span>
-                <span style={{ fontSize: 13, color: "#c99c9c", lineHeight: 1.3 }}>
-                  перерасход прошлых дней — вычтено из лимита
-                </span>
+              <div style={{ display: "flex", alignItems: "center", gap: 9, marginTop: 18, width: "100%",
+                background: "#241514", border: "1px solid #442020", borderRadius: 12, padding: "10px 13px" }}>
+                <span style={{ fontFamily: mono, fontWeight: 700, fontSize: 20, color: C.red, whiteSpace: "nowrap" }}>{eur(m.carryIn)}</span>
+                <span style={{ fontSize: 12.5, color: "#C39A9A", lineHeight: 1.3 }}>перерасход — вычтено из лимита</span>
               </div>
             )}
 
-            <div style={{ marginTop: 16, height: 12, background: C.surface2, borderRadius: 20, overflow: "hidden", border: `1px solid ${C.border}` }}>
-              <div style={{ height: "100%", width: `${Math.min(m.ratio, 1) * 100}%`, background: statusColor,
-                borderRadius: 20, transition: "width .5s ease", animation: "fillbar .6s ease" }} />
-            </div>
-            <div style={{ display: "flex", justifyContent: "space-between", marginTop: 7, fontSize: 11, fontFamily: mono, color: C.muted }}>
-              <span>0 €</span>
-              <span style={{ color: statusColor }}>
-                {m.status === "red" ? "перебор за день" : m.status === "amber" ? "почти лимит" : "в норме"}
-              </span>
-              <span>{eur(m.todayAllowance)}</span>
-            </div>
-
-            <div style={{ fontSize: 12, color: C.muted, marginTop: 12, lineHeight: 1.5 }}>
-              база {eur(m.baselineDaily)} · потрачено {eur(m.spentToday)}
-              {m.daysRemaining > 1 ? ` · завтра перейдёт ${signEur(m.carryTomorrow)}` : ""}
+            <div style={{ display: "flex", width: "100%", marginTop: 16, gap: 8 }}>
+              {[["база", eur(m.baselineDaily)], ["потрачено", eur(m.spentToday)],
+                ...(m.daysRemaining > 1 ? [["завтра", signEur(m.carryTomorrow)]] : [])].map(([k, v], i) => (
+                <div key={i} style={{ flex: 1, textAlign: "center", background: C.surface2, borderRadius: 10, padding: "8px 4px" }}>
+                  <div style={{ fontSize: 10, color: C.faint, textTransform: "uppercase", letterSpacing: 0.5 }}>{k}</div>
+                  <div style={{ fontFamily: mono, fontSize: 13, color: C.muted, marginTop: 3, whiteSpace: "nowrap" }}>{v}</div>
+                </div>
+              ))}
             </div>
           </div>
 
@@ -320,11 +323,11 @@ function Tracker({ session }) {
             </div>
           )}
 
-          {/* moto fund */}
-          <div style={{ ...panel, marginTop: 12, background: "linear-gradient(135deg,#1a2740,#191C22)", borderColor: "#243350" }}>
-            <div style={label}>Накопления</div>
-            <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>прогноз к зарплате при текущем темпе</div>
-            <div style={{ fontFamily: mono, fontWeight: 700, fontSize: 38, color: C.green, marginTop: 8, letterSpacing: -0.5 }}>
+          {/* накопления */}
+          <div style={{ ...panel, marginTop: 12 }}>
+            <div style={label}>Накопления к зарплате</div>
+            <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>прогноз при текущем темпе трат</div>
+            <div style={{ fontFamily: mono, fontWeight: 700, fontSize: 34, color: C.green, marginTop: 8, letterSpacing: -0.5 }}>
               {eur(m.projectedSavings)}
             </div>
             <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
