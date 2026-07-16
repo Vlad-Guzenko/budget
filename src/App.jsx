@@ -166,6 +166,12 @@ function Tracker({ session, accent, setAccent }) {
   }, [uid]);
   useEffect(() => { load(); }, [load]);
 
+  // сумма всех копилок — реактивная
+  const savingsTotal = useMemo(
+    () => goals.reduce((s, g) => s + goalBalance(g, contribs), 0),
+    [goals, contribs]
+  );
+
   // ---- math (envelope + доходы, отправленные в бюджет) ----
   const m = useMemo(() => {
     if (!period) return null;
@@ -175,9 +181,16 @@ function Tracker({ session, accent, setAccent }) {
     const daysRemaining = Math.max(1, period.totalDays - todayIndex);
     const completedDays = todayIndex;
 
+    // на жизнь считается живьём от остатка: доход − обязательные − копилка
+    // (для старого перенесённого периода income=0 → берём сохранённое живое)
+    const reservedSavings = period.income > 0 ? savingsTotal : period.reservedSavings;
+    const baseLiving = period.income > 0
+      ? Math.max(0, period.income - sumObl(period.obligations) - savingsTotal)
+      : period.livingBudget;
+
     const budgetIncome = incomes.filter((i) => i.status === "budget" && i.periodId === period.id)
       .reduce((s, i) => s + i.amount, 0);
-    const effectiveLiving = period.livingBudget + budgetIncome;
+    const effectiveLiving = baseLiving + budgetIncome;
     const baselineDaily = effectiveLiving / period.totalDays;
 
     const spentToday = entries.filter((e) => e.date === today).reduce((s, e) => s + e.amount, 0);
@@ -200,9 +213,10 @@ function Tracker({ session, accent, setAccent }) {
     const endISO = addDays(period.startISO, period.totalDays - 1);
 
     return { today, todayIndex, daysRemaining, spentToday, totalSpent, remainingBudget, budgetIncome,
-      effectiveLiving, baselineDaily, carryIn, todayAllowance, leftToday, carryTomorrow,
+      effectiveLiving, baseLiving, reservedSavings, baselineDaily, carryIn, todayAllowance, leftToday, carryTomorrow,
       projectedTotal, projectedLeftover, ratio, status, endISO };
-  }, [period, entries, incomes]);
+  }, [period, entries, incomes, savingsTotal]);
+
 
   // ---- spend handlers ----
   const addSpend = async (val) => {
@@ -349,7 +363,6 @@ function Tracker({ session, accent, setAccent }) {
   if (!loaded || !m) return <Splash />;
 
   const pendingTotal = incomes.filter((i) => i.status === "pending").reduce((s, i) => s + i.amount, 0);
-  const savingsTotal = goals.reduce((s, g) => s + goalBalance(g, contribs), 0);
 
   return (
     <div style={wrap}>
@@ -477,7 +490,7 @@ function BudgetOverview({ m, period, input, setInput, addSpend, entries, removeE
         </div>
       )}
 
-      {period.income > 0.005 && <BreakdownCard period={period} />}
+      {period.income > 0.005 && <BreakdownCard period={period} living={m.baseLiving} reserved={m.reservedSavings} />}
 
       {/* record */}
       <div style={{ ...panel, marginTop: 12 }}>
@@ -1076,11 +1089,11 @@ function CloseMonthModal({ m, goals, contribs, onClose, onConfirm }) {
 }
 
 // ---------- breakdown of income allocation ----------
-function BreakdownCard({ period }) {
+function BreakdownCard({ period, living, reserved }) {
   const [open, setOpen] = useState(false);
   const obl = period.obligations || [];
   const oblSum = sumObl(obl);
-  const daily = period.livingBudget / period.totalDays;
+  const daily = living / period.totalDays;
   const Row = ({ k, v, c, minus }) => (
     <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontSize: 13.5 }}>
       <span style={{ color: C.muted }}>{k}</span>
@@ -1104,11 +1117,11 @@ function BreakdownCard({ period }) {
             <span style={{ fontFamily: mono, color: C.faint }}>{eur(parseNum(o.amount) || 0)}</span>
           </div>
         ))}
-        {period.reservedSavings > 0.005 && <Row k="Отложено в копилку" v={period.reservedSavings} c={C.green} minus />}
+        {reserved > 0.005 && <Row k="Отложено в копилку" v={reserved} c={C.green} minus />}
         <div style={{ height: 1, background: C.border, margin: "8px 0" }} />
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
           <span style={{ fontSize: 13.5, fontWeight: 600 }}>На жизнь</span>
-          <span style={{ fontFamily: mono, fontWeight: 700, fontSize: 18, color: "var(--accent, #3B82F6)" }}>{eur(period.livingBudget)}</span>
+          <span style={{ fontFamily: mono, fontWeight: 700, fontSize: 18, color: "var(--accent, #3B82F6)" }}>{eur(living)}</span>
         </div>
         <div style={{ textAlign: "right", fontSize: 11.5, color: C.muted, marginTop: 2 }}>≈ {eur(daily)}/день на {period.totalDays} дн.</div>
       </div>
