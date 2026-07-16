@@ -107,6 +107,7 @@ function Auth() {
 // ---------------------------------------------------------------------
 const goalBalance = (goal, contribs) =>
   Number(goal.seed || 0) + contribs.filter((c) => c.goalId === goal.id).reduce((s, c) => s + c.amount, 0);
+const sumObl = (obl) => (obl || []).reduce((s, o) => s + (parseNum(o.amount) || 0), 0);
 
 function Tracker({ session, accent, setAccent }) {
   const uid = session.user.id;
@@ -138,7 +139,9 @@ function Tracker({ session, accent, setAccent }) {
       per = ins.data;
     }
     setPeriod({ id: per.id, label: per.label, livingBudget: Number(per.living_budget),
-      totalDays: per.total_days, startISO: per.start_date });
+      totalDays: per.total_days, startISO: per.start_date,
+      income: Number(per.income || 0), obligations: per.obligations || [],
+      reservedSavings: Number(per.reserved_savings || 0) });
 
     const { data: ent } = await supabase.from("entries").select("*")
       .eq("user_id", uid).eq("period_id", per.id).order("created_at", { ascending: false });
@@ -292,33 +295,53 @@ function Tracker({ session, accent, setAccent }) {
     await supabase.from("contributions").delete().eq("id", id);
   };
 
-  // ---- close month / new period ----
-  const closeMonth = async ({ moveAmount, goalId, label, livingBudget, totalDays }) => {
-    if (moveAmount > 0 && goalId) {
+  // ---- close month / new period (с раскладом дохода) ----
+  const closeMonth = async ({ leftoverMove, leftoverGoal, np }) => {
+    // np = { label, income, obligations, days, startSavings, startGoal }
+    if (leftoverMove > 0 && leftoverGoal) {
       await supabase.from("contributions").insert({
-        user_id: uid, goal_id: goalId, amount: moveAmount, source: "month_close", note: "Остаток периода",
+        user_id: uid, goal_id: leftoverGoal, amount: leftoverMove, source: "month_close", note: "Остаток периода",
       });
     }
+    const inc = parseNum(np.income) || 0;
+    const obl = (np.obligations || []).filter((o) => (parseNum(o.amount) || 0) > 0)
+      .map((o) => ({ name: o.name || "Расход", amount: parseNum(o.amount) || 0 }));
+    const save = parseNum(np.startSavings) || 0;
+    const living = Math.max(0, inc - sumObl(obl) - save);
+
     await supabase.from("periods").update({ status: "closed" }).eq("id", period.id);
     await supabase.from("periods").insert({
-      user_id: uid, label: label || "Новый период", living_budget: livingBudget,
-      total_days: totalDays, start_date: todayStr(), status: "active",
+      user_id: uid, label: np.label || "Новый период", living_budget: living,
+      total_days: parseInt(np.days) || 30, start_date: todayStr(), status: "active",
+      income: inc, obligations: obl, reserved_savings: save,
     });
+    if (save > 0 && np.startGoal) {
+      await supabase.from("contributions").insert({
+        user_id: uid, goal_id: np.startGoal, amount: save, source: "period_start", note: "Из зарплаты",
+      });
+    }
     setShowClose(false);
     setLoaded(false);
     await load();
   };
 
   const saveSettings = async (draft) => {
-    const clean = {
-      livingBudget: parseNum(draft.livingBudget) || DEFAULT_PERIOD.livingBudget,
-      totalDays: parseInt(draft.totalDays) || DEFAULT_PERIOD.totalDays,
-      startISO: draft.startISO || period.startISO, label: draft.label || period.label,
+    // draft: { label, income, obligations, totalDays, startISO }
+    const inc = parseNum(draft.income) || 0;
+    const obl = (draft.obligations || []).filter((o) => (parseNum(o.amount) || 0) > 0)
+      .map((o) => ({ name: o.name || "Расход", amount: parseNum(o.amount) || 0 }));
+    // для текущего периода "отложено" = то, что уже лежит в копилках (не трогаем, не дублируем)
+    const reserved = inc > 0 ? goals.reduce((s, g) => s + goalBalance(g, contribs), 0) : period.reservedSavings;
+    const living = inc > 0 ? Math.max(0, inc - sumObl(obl) - reserved) : period.livingBudget;
+    const patch = {
+      label: draft.label || period.label, totalDays: parseInt(draft.totalDays) || period.totalDays,
+      startISO: draft.startISO || period.startISO, income: inc, obligations: obl,
+      reservedSavings: reserved, livingBudget: living,
     };
-    setPeriod((p) => ({ ...p, ...clean }));
+    setPeriod((p) => ({ ...p, ...patch }));
     await supabase.from("periods").update({
-      living_budget: clean.livingBudget, total_days: clean.totalDays,
-      start_date: clean.startISO, label: clean.label,
+      living_budget: living, total_days: patch.totalDays, start_date: patch.startISO,
+      label: patch.label, income: inc, obligations: obl, reserved_savings: reserved,
     }).eq("id", period.id);
     setShowSettings(false);
   };
@@ -384,7 +407,7 @@ function Tracker({ session, accent, setAccent }) {
       )}
 
       {showSettings && (
-        <SettingsModal period={period} accent={accent} setAccent={setAccent}
+        <SettingsModal period={period} accent={accent} setAccent={setAccent} savingsTotal={savingsTotal}
           onClose={() => setShowSettings(false)} onSave={saveSettings} />
       )}
       {routeFor && (
@@ -453,6 +476,8 @@ function BudgetOverview({ m, period, input, setInput, addSpend, entries, removeE
           <span style={{ fontSize: 12.5, color: C.muted }}>поступлений добавлено в бюджет месяца</span>
         </div>
       )}
+
+      {period.income > 0.005 && <BreakdownCard period={period} />}
 
       {/* record */}
       <div style={{ ...panel, marginTop: 12 }}>
@@ -645,7 +670,7 @@ function GoalCard({ goal, contribs, onContribute, onRemoveContribution, onEdit, 
   const doSub = async () => { const n = parseNum(amt); if (isFinite(n) && n > 0) await onContribute(goal.id, -n, null, "manual"); setAmt(""); setMode(null); };
   const doEdit = async () => { await onEdit(goal, { name: enm || goal.name, target: isFinite(parseNum(etg)) ? parseNum(etg) : null, deadline: edl || null }); setMode(null); };
 
-  const srcLabel = { income: "поступление", month_close: "остаток периода", manual: "вручную" };
+  const srcLabel = { income: "поступление", month_close: "остаток периода", period_start: "из зарплаты", manual: "вручную" };
 
   return (
     <div style={panel}>
@@ -879,14 +904,22 @@ function HistoryView({ period, entries, m, onRemove }) {
 }
 
 // ---------- MODALS ----------
-function SettingsModal({ period, accent, setAccent, onClose, onSave }) {
-  const [draft, setDraft] = useState({ label: period.label, livingBudget: period.livingBudget, totalDays: period.totalDays, startISO: period.startISO });
+function SettingsModal({ period, accent, setAccent, savingsTotal, onClose, onSave }) {
+  const [draft, setDraft] = useState({
+    label: period.label, income: period.income || "", totalDays: period.totalDays, startISO: period.startISO,
+    obligations: (period.obligations && period.obligations.length ? period.obligations : []),
+  });
   const [saving, setSaving] = useState(false);
+  const inc = parseNum(draft.income) || 0;
+  const oblSum = sumObl(draft.obligations);
+  const living = inc > 0 ? Math.max(0, inc - oblSum - savingsTotal) : period.livingBudget;
+
   return (
     <div style={overlay} onClick={onClose}>
-      <div style={modal} onClick={(e) => e.stopPropagation()}>
+      <div style={{ ...modal, maxHeight: "88vh", overflowY: "auto" }} onClick={(e) => e.stopPropagation()}>
         <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>Настройки периода</div>
-        <div style={{ fontSize: 12, color: C.muted, marginBottom: 16 }}>Можно подправить текущий бюджет и цвет.</div>
+        <div style={{ fontSize: 12, color: C.muted, marginBottom: 16 }}>Заполни расклад — «на жизнь» посчитается само.</div>
+
         <div style={{ fontSize: 12, color: C.muted, marginBottom: 8 }}>Акцентный цвет</div>
         <div style={{ display: "flex", gap: 10, marginBottom: 18 }}>
           {ACCENTS.map((a) => (
@@ -896,11 +929,31 @@ function SettingsModal({ period, accent, setAccent, onClose, onSave }) {
               boxShadow: accent === a.color ? `0 0 0 2px ${a.color}` : "none", cursor: "pointer" }} />
           ))}
         </div>
+
         <Field label="Название периода" value={draft.label} type="text" onChange={(v) => setDraft({ ...draft, label: v })} />
-        <Field label="Живые деньги, €" value={draft.livingBudget} onChange={(v) => setDraft({ ...draft, livingBudget: v })} />
+        <Field label="Пришло за период, € (баланс/зарплата)" value={draft.income} onChange={(v) => setDraft({ ...draft, income: v })} />
+
+        <div style={{ fontSize: 12, color: C.muted, marginBottom: 6 }}>Обязательные расходы</div>
+        <ObligationList items={draft.obligations} onChange={(o) => setDraft({ ...draft, obligations: o })} />
+
         <Field label="Всего дней" value={draft.totalDays} onChange={(v) => setDraft({ ...draft, totalDays: v })} />
         <Field label="Старт (ГГГГ-ММ-ДД)" value={draft.startISO} type="text" onChange={(v) => setDraft({ ...draft, startISO: v })} />
-        <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
+
+        {inc > 0 && (
+          <div style={{ ...panel, padding: 14, marginTop: 4, marginBottom: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}>
+              <span style={{ color: C.muted }}>Уже в копилке (не трогаем)</span>
+              <span style={{ fontFamily: mono, color: C.green }}>−{eur(savingsTotal)}</span>
+            </div>
+            <div style={{ height: 1, background: C.border, margin: "8px 0" }} />
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+              <span style={{ fontWeight: 600 }}>На жизнь</span>
+              <span style={{ fontFamily: mono, fontWeight: 700, fontSize: 18, color: "var(--accent, #3B82F6)" }}>{eur(living)}</span>
+            </div>
+          </div>
+        )}
+
+        <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
           <button onClick={onClose} style={{ ...chip, flex: 1, padding: "12px" }}>Отмена</button>
           <button disabled={saving} onClick={async () => { setSaving(true); await onSave(draft); }} style={{ ...primaryBtn, flex: 1, padding: "12px" }}>{saving ? "…" : "Сохранить"}</button>
         </div>
@@ -931,55 +984,155 @@ function GoalPicker({ goals, contribs, onPick, onClose }) {
 function CloseMonthModal({ m, goals, contribs, onClose, onConfirm }) {
   const leftover = Math.max(0, m.remainingBudget);
   const [move, setMove] = useState(leftover ? leftover.toFixed(2) : "");
-  const [goalId, setGoalId] = useState(goals[0]?.id || "");
+  const [leftoverGoal, setLeftoverGoal] = useState(goals[0]?.id || "");
+
   const [label, setLabel] = useState("");
-  const [living, setLiving] = useState("");
+  const [income, setIncome] = useState("");
+  const [obligations, setObligations] = useState([]);
   const [days, setDays] = useState("30");
+  const [startSavings, setStartSavings] = useState("");
+  const [startGoal, setStartGoal] = useState(goals[0]?.id || "");
   const [busy, setBusy] = useState(false);
+
+  const inc = parseNum(income) || 0;
+  const oblSum = sumObl(obligations);
+  const save = parseNum(startSavings) || 0;
+  const living = Math.max(0, inc - oblSum - save);
 
   const confirm = async () => {
     setBusy(true);
     await onConfirm({
-      moveAmount: parseNum(move) > 0 ? parseNum(move) : 0,
-      goalId: goalId || null,
-      label: label || "Новый период",
-      livingBudget: parseNum(living) || 0,
-      totalDays: parseInt(days) || 30,
+      leftoverMove: parseNum(move) > 0 ? parseNum(move) : 0,
+      leftoverGoal: leftoverGoal || null,
+      np: { label, income, obligations, days, startSavings, startGoal: startGoal || null },
     });
   };
 
   return (
     <div style={overlay} onClick={onClose}>
-      <div style={{ ...modal, maxHeight: "88vh", overflowY: "auto" }} onClick={(e) => e.stopPropagation()}>
+      <div style={{ ...modal, maxHeight: "90vh", overflowY: "auto" }} onClick={(e) => e.stopPropagation()}>
         <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>Закрыть период</div>
-        <div style={{ fontSize: 12, color: C.muted, marginBottom: 14 }}>Остаток можно отложить в копилку, затем задать новый месяц.</div>
+        <div style={{ fontSize: 12, color: C.muted, marginBottom: 14 }}>Сначала — остаток текущего, потом — расклад нового месяца.</div>
 
         <div style={{ ...panel, padding: 14, marginBottom: 14 }}>
-          <div style={{ fontSize: 12, color: C.muted }}>Остаток бюджета</div>
-          <div style={{ fontFamily: mono, fontWeight: 700, fontSize: 26, color: leftover > 0 ? C.green : C.muted, marginTop: 4 }}>{eur(leftover)}</div>
+          <div style={{ fontSize: 12, color: C.muted }}>Остаток текущего периода</div>
+          <div style={{ fontFamily: mono, fontWeight: 700, fontSize: 24, color: leftover > 0 ? C.green : C.muted, marginTop: 4 }}>{eur(leftover)}</div>
+          {goals.length > 0 && leftover > 0 && (
+            <div style={{ marginTop: 10 }}>
+              <Field label="Отложить остаток в копилку, €" value={move} onChange={setMove} />
+              <select value={leftoverGoal} onChange={(e) => setLeftoverGoal(e.target.value)} style={inputStyle}>
+                {goals.map((g) => (<option key={g.id} value={g.id}>{g.name} · {eur(goalBalance(g, contribs))}</option>))}
+              </select>
+            </div>
+          )}
         </div>
+
+        <div style={{ ...label, marginBottom: 10 }}>Новый месяц</div>
+        <Field label="Название (Сентябрь…)" value={label} type="text" onChange={setLabel} />
+        <Field label="Пришла зарплата, €" value={income} onChange={setIncome} />
+
+        <div style={{ fontSize: 12, color: C.muted, marginBottom: 6 }}>Обязательные расходы</div>
+        <ObligationList items={obligations} onChange={setObligations} />
 
         {goals.length > 0 && (
-          <>
-            <Field label="Отложить в копилку, €" value={move} onChange={setMove} />
-            <div style={{ fontSize: 12, color: C.muted, marginBottom: 5 }}>Копилка</div>
-            <select value={goalId} onChange={(e) => setGoalId(e.target.value)} style={{ ...inputStyle, marginBottom: 12 }}>
-              {goals.map((g) => (<option key={g.id} value={g.id}>{g.name} · {eur(goalBalance(g, contribs))}</option>))}
-            </select>
-          </>
+          <div style={{ marginTop: 4 }}>
+            <Field label="Сразу в копилку, € (необязательно)" value={startSavings} onChange={setStartSavings} />
+            {save > 0 && (
+              <select value={startGoal} onChange={(e) => setStartGoal(e.target.value)} style={{ ...inputStyle, marginBottom: 12 }}>
+                {goals.map((g) => (<option key={g.id} value={g.id}>{g.name} · {eur(goalBalance(g, contribs))}</option>))}
+              </select>
+            )}
+          </div>
         )}
+        <Field label="Дней в периоде" value={days} onChange={setDays} />
 
-        <div style={{ height: 1, background: C.border, margin: "6px 0 14px" }} />
-        <div style={{ ...label, marginBottom: 10 }}>Новый период</div>
-        <Field label="Название (Сентябрь…)" value={label} type="text" onChange={setLabel} />
-        <Field label="Живые деньги на период, €" value={living} onChange={setLiving} />
-        <Field label="Дней" value={days} onChange={setDays} />
+        <div style={{ ...panel, padding: 14, marginBottom: 12 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "3px 0" }}>
+            <span style={{ color: C.muted }}>Зарплата</span><span style={{ fontFamily: mono }}>{eur(inc)}</span>
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "3px 0" }}>
+            <span style={{ color: C.muted }}>− Обязательные</span><span style={{ fontFamily: mono, color: C.red }}>−{eur(oblSum)}</span>
+          </div>
+          {save > 0 && (
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "3px 0" }}>
+              <span style={{ color: C.muted }}>− В копилку</span><span style={{ fontFamily: mono, color: C.green }}>−{eur(save)}</span>
+            </div>
+          )}
+          <div style={{ height: 1, background: C.border, margin: "8px 0" }} />
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+            <span style={{ fontWeight: 600 }}>На жизнь</span>
+            <span style={{ fontFamily: mono, fontWeight: 700, fontSize: 18, color: "var(--accent, #3B82F6)" }}>{eur(living)}</span>
+          </div>
+          <div style={{ textAlign: "right", fontSize: 11.5, color: C.muted, marginTop: 2 }}>≈ {eur(living / (parseInt(days) || 30))}/день</div>
+        </div>
 
-        <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+        <div style={{ display: "flex", gap: 8 }}>
           <button onClick={onClose} style={{ ...chip, flex: 1, padding: "12px" }}>Отмена</button>
-          <button disabled={busy} onClick={confirm} style={{ ...primaryBtn, flex: 1, padding: "12px" }}>{busy ? "…" : "Закрыть и начать"}</button>
+          <button disabled={busy || inc <= 0} onClick={confirm} style={{ ...primaryBtn, flex: 1, padding: "12px", opacity: inc <= 0 ? 0.5 : 1 }}>{busy ? "…" : "Закрыть и начать"}</button>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ---------- breakdown of income allocation ----------
+function BreakdownCard({ period }) {
+  const [open, setOpen] = useState(false);
+  const obl = period.obligations || [];
+  const oblSum = sumObl(obl);
+  const daily = period.livingBudget / period.totalDays;
+  const Row = ({ k, v, c, minus }) => (
+    <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontSize: 13.5 }}>
+      <span style={{ color: C.muted }}>{k}</span>
+      <span style={{ fontFamily: mono, color: c || C.text }}>{minus ? "−" : ""}{eur(v)}</span>
+    </div>
+  );
+  return (
+    <div style={{ ...panel, marginTop: 12 }}>
+      <div style={label}>Откуда взялся бюджет</div>
+      <div style={{ marginTop: 8 }}>
+        <Row k="Пришло за период" v={period.income} c={C.text} />
+        <button onClick={() => setOpen(!open)} style={{ width: "100%", background: "none", padding: 0 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontSize: 13.5 }}>
+            <span style={{ color: C.muted }}>Обязательные {obl.length ? `(${obl.length}) ▾` : ""}</span>
+            <span style={{ fontFamily: mono, color: C.red }}>−{eur(oblSum)}</span>
+          </div>
+        </button>
+        {open && obl.map((o, i) => (
+          <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0 3px 14px", fontSize: 12.5 }}>
+            <span style={{ color: C.faint }}>{o.name}</span>
+            <span style={{ fontFamily: mono, color: C.faint }}>{eur(parseNum(o.amount) || 0)}</span>
+          </div>
+        ))}
+        {period.reservedSavings > 0.005 && <Row k="Отложено в копилку" v={period.reservedSavings} c={C.green} minus />}
+        <div style={{ height: 1, background: C.border, margin: "8px 0" }} />
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+          <span style={{ fontSize: 13.5, fontWeight: 600 }}>На жизнь</span>
+          <span style={{ fontFamily: mono, fontWeight: 700, fontSize: 18, color: "var(--accent, #3B82F6)" }}>{eur(period.livingBudget)}</span>
+        </div>
+        <div style={{ textAlign: "right", fontSize: 11.5, color: C.muted, marginTop: 2 }}>≈ {eur(daily)}/день на {period.totalDays} дн.</div>
+      </div>
+    </div>
+  );
+}
+
+// ---------- editable list of obligations ----------
+function ObligationList({ items, onChange }) {
+  const upd = (i, field, val) => { const c = items.map((o, k) => k === i ? { ...o, [field]: val } : o); onChange(c); };
+  const add = () => onChange([...items, { name: "", amount: "" }]);
+  const rm = (i) => onChange(items.filter((_, k) => k !== i));
+  return (
+    <div>
+      {items.map((o, i) => (
+        <div key={i} style={{ display: "flex", gap: 6, marginBottom: 6 }}>
+          <input type="text" placeholder="Название" value={o.name} onChange={(e) => upd(i, "name", e.target.value)}
+            style={{ ...inputStyle, flex: 1, fontSize: 14, padding: "10px 12px" }} />
+          <input type="number" inputMode="decimal" placeholder="€" value={o.amount} onChange={(e) => upd(i, "amount", e.target.value)}
+            style={{ ...inputStyle, width: 90, fontSize: 14, padding: "10px 12px" }} />
+          <button onClick={() => rm(i)} style={{ ...miniBtn, padding: "0 12px", color: C.red, borderColor: "#3a2626" }}>×</button>
+        </div>
+      ))}
+      <button onClick={add} style={{ ...miniBtn, width: "100%", padding: "10px", marginTop: 2 }}>+ строка</button>
     </div>
   );
 }
