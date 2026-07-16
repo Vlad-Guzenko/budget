@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from "react";
 import { supabase } from "./supabase.js";
 
-// ---------- palette (instrument cluster) ----------
+// ---------- palette ----------
 const C = {
   bg: "#0B0D11", surface: "#15181E", surface2: "#1D212A", border: "#262B34",
   text: "#EDEFF3", muted: "#868D98", faint: "#5A616B", blue: "#3B82F6",
@@ -10,34 +10,24 @@ const C = {
 const mono = "'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace";
 const sans = "'Inter', system-ui, -apple-system, sans-serif";
 
-const DEFAULT_CONFIG = {
-  livingBudget: 800, totalDays: 45, startISO: "2026-07-15", baseSavings: 4039.19,
-};
+const DEFAULT_PERIOD = { livingBudget: 800, totalDays: 45, startISO: "2026-07-15", label: "Текущий период" };
 
-// ---------- date helpers ----------
+// ---------- helpers ----------
 const pad = (n) => String(n).padStart(2, "0");
-const todayStr = () => {
-  const d = new Date();
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-};
+const todayStr = () => { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
 const dateFromISO = (s) => { const [y, m, d] = s.split("-").map(Number); return new Date(y, m - 1, d); };
 const daysBetween = (a, b) => Math.round((dateFromISO(b) - dateFromISO(a)) / 86400000);
-const addDays = (iso, n) => {
-  const d = dateFromISO(iso); d.setDate(d.getDate() + n);
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-};
+const addDays = (iso, n) => { const d = dateFromISO(iso); d.setDate(d.getDate() + n); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
 const RU_MONTHS = ["янв","фев","мар","апр","мая","июн","июл","авг","сен","окт","ноя","дек"];
 const prettyDate = (iso) => { const d = dateFromISO(iso); return `${d.getDate()} ${RU_MONTHS[d.getMonth()]}`; };
 const eur = (v) => (v < 0 ? "-" : "") + Math.abs(v).toFixed(2).replace(".", ",") + " €";
 const signEur = (v) => (v > 0 ? "+" : v < 0 ? "-" : "") + Math.abs(v).toFixed(2).replace(".", ",") + " €";
+const parseNum = (v) => { const n = parseFloat(String(v).replace(",", ".")); return isFinite(n) ? n : NaN; };
 
 const ACCENTS = [
-  { id: "blue", color: "#3B82F6" },
-  { id: "teal", color: "#28C0B8" },
-  { id: "green", color: "#2FBF87" },
-  { id: "purple", color: "#7C6CF0" },
-  { id: "pink", color: "#E85A9B" },
-  { id: "orange", color: "#F5893B" },
+  { id: "blue", color: "#3B82F6" }, { id: "teal", color: "#28C0B8" },
+  { id: "green", color: "#2FBF87" }, { id: "purple", color: "#7C6CF0" },
+  { id: "pink", color: "#E85A9B" }, { id: "orange", color: "#F5893B" },
   { id: "red", color: "#F0655F" },
 ];
 
@@ -45,16 +35,10 @@ const ACCENTS = [
 export default function App() {
   const [session, setSession] = useState(undefined);
   const [accent, setAccentState] = useState(() => {
-    try { return localStorage.getItem("accent") || ACCENTS[0].color; }
-    catch { return ACCENTS[0].color; }
+    try { return localStorage.getItem("accent") || ACCENTS[0].color; } catch { return ACCENTS[0].color; }
   });
-  const setAccent = (c) => {
-    setAccentState(c);
-    try { localStorage.setItem("accent", c); } catch {}
-  };
-  useEffect(() => {
-    document.documentElement.style.setProperty("--accent", accent);
-  }, [accent]);
+  const setAccent = (c) => { setAccentState(c); try { localStorage.setItem("accent", c); } catch {} };
+  useEffect(() => { document.documentElement.style.setProperty("--accent", accent); }, [accent]);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session ?? null));
@@ -98,7 +82,7 @@ function Auth() {
     <div style={{ ...wrap, minHeight: "100vh", justifyContent: "center" }}>
       <div style={{ marginBottom: 22, textAlign: "center" }}>
         <div style={{ fontSize: 22, fontWeight: 700 }}>Бюджет</div>
-        <div style={{ fontSize: 13, color: C.muted, marginTop: 4 }}>дневной расчёт до зарплаты</div>
+        <div style={{ fontSize: 13, color: C.muted, marginTop: 4 }}>месяц · доходы · копилка</div>
       </div>
       <div style={panel}>
         <input type="email" placeholder="e-mail" value={email} autoCapitalize="none"
@@ -121,330 +105,653 @@ function Auth() {
 }
 
 // ---------------------------------------------------------------------
+const goalBalance = (goal, contribs) =>
+  Number(goal.seed || 0) + contribs.filter((c) => c.goalId === goal.id).reduce((s, c) => s + c.amount, 0);
+
 function Tracker({ session, accent, setAccent }) {
   const uid = session.user.id;
   const [loaded, setLoaded] = useState(false);
-  const [config, setConfig] = useState(DEFAULT_CONFIG);
+  const [period, setPeriod] = useState(null);
   const [entries, setEntries] = useState([]);
+  const [incomes, setIncomes] = useState([]);
+  const [goals, setGoals] = useState([]);
+  const [contribs, setContribs] = useState([]);
   const [input, setInput] = useState("");
+  const [tab, setTab] = useState("budget");       // budget | income | savings
+  const [sub, setSub] = useState("overview");      // overview | chart | history
   const [showSettings, setShowSettings] = useState(false);
-  const [draft, setDraft] = useState(DEFAULT_CONFIG);
-  const [saving, setSaving] = useState(false);
-  const [tab, setTab] = useState("budget"); // budget | chart
 
-  const mapConfig = (row) => ({
-    livingBudget: Number(row.living_budget), totalDays: row.total_days,
-    startISO: row.start_date, baseSavings: Number(row.base_savings),
-  });
+  // modals
+  const [routeFor, setRouteFor] = useState(null);  // income needing goal choice
+  const [showClose, setShowClose] = useState(false);
 
+  // ---- load ----
   const load = useCallback(async () => {
-    const { data: cfg } = await supabase.from("config").select("*").eq("user_id", uid).maybeSingle();
-    if (cfg) setConfig(mapConfig(cfg));
-    else {
-      await supabase.from("config").insert({
-        user_id: uid, living_budget: DEFAULT_CONFIG.livingBudget,
-        total_days: DEFAULT_CONFIG.totalDays, start_date: DEFAULT_CONFIG.startISO,
-        base_savings: DEFAULT_CONFIG.baseSavings,
-      });
-      setConfig(DEFAULT_CONFIG);
+    // active period
+    let { data: per } = await supabase.from("periods").select("*")
+      .eq("user_id", uid).eq("status", "active").order("created_at", { ascending: false }).maybeSingle();
+    if (!per) {
+      const ins = await supabase.from("periods").insert({
+        user_id: uid, label: DEFAULT_PERIOD.label, living_budget: DEFAULT_PERIOD.livingBudget,
+        total_days: DEFAULT_PERIOD.totalDays, start_date: DEFAULT_PERIOD.startISO, status: "active",
+      }).select().single();
+      per = ins.data;
     }
-    const { data: rows } = await supabase.from("entries").select("*").eq("user_id", uid).order("created_at", { ascending: false });
-    setEntries((rows ?? []).map((r) => ({ id: r.id, date: r.spent_on, amount: Number(r.amount) })));
+    setPeriod({ id: per.id, label: per.label, livingBudget: Number(per.living_budget),
+      totalDays: per.total_days, startISO: per.start_date });
+
+    const { data: ent } = await supabase.from("entries").select("*")
+      .eq("user_id", uid).eq("period_id", per.id).order("created_at", { ascending: false });
+    setEntries((ent ?? []).map((r) => ({ id: r.id, date: r.spent_on, amount: Number(r.amount) })));
+
+    const { data: inc } = await supabase.from("incomes").select("*")
+      .eq("user_id", uid).order("received_on", { ascending: false }).order("created_at", { ascending: false });
+    setIncomes((inc ?? []).map((r) => ({ id: r.id, date: r.received_on, amount: Number(r.amount),
+      source: r.source || "", status: r.status, periodId: r.period_id, goalId: r.goal_id })));
+
+    const { data: gl } = await supabase.from("goals").select("*")
+      .eq("user_id", uid).neq("status", "archived").order("created_at", { ascending: true });
+    setGoals((gl ?? []).map((r) => ({ id: r.id, name: r.name, target: r.target_amount != null ? Number(r.target_amount) : null,
+      deadline: r.deadline, seed: Number(r.seed || 0), status: r.status })));
+
+    const { data: con } = await supabase.from("contributions").select("*")
+      .eq("user_id", uid).order("created_at", { ascending: false });
+    setContribs((con ?? []).map((r) => ({ id: r.id, goalId: r.goal_id, amount: Number(r.amount),
+      source: r.source, sourceId: r.source_id, note: r.note || "", createdAt: r.created_at })));
+
     setLoaded(true);
   }, [uid]);
   useEffect(() => { load(); }, [load]);
 
-  // ----- math (конвертная модель: несpotраченный лимит переносится вперёд) -----
+  // ---- math (envelope + доходы, отправленные в бюджет) ----
   const m = useMemo(() => {
+    if (!period) return null;
     const today = todayStr();
-    const idxRaw = daysBetween(config.startISO, today);
-    const todayIndex = Math.max(0, Math.min(idxRaw, config.totalDays - 1));
-    const daysRemaining = Math.max(1, config.totalDays - todayIndex);
+    const idxRaw = daysBetween(period.startISO, today);
+    const todayIndex = Math.max(0, Math.min(idxRaw, period.totalDays - 1));
+    const daysRemaining = Math.max(1, period.totalDays - todayIndex);
     const completedDays = todayIndex;
-    const baselineDaily = config.livingBudget / config.totalDays;
+
+    const budgetIncome = incomes.filter((i) => i.status === "budget" && i.periodId === period.id)
+      .reduce((s, i) => s + i.amount, 0);
+    const effectiveLiving = period.livingBudget + budgetIncome;
+    const baselineDaily = effectiveLiving / period.totalDays;
 
     const spentToday = entries.filter((e) => e.date === today).reduce((s, e) => s + e.amount, 0);
     const spentBeforeToday = entries.filter((e) => e.date < today).reduce((s, e) => s + e.amount, 0);
     const totalSpent = spentBeforeToday + spentToday;
+    const remainingBudget = effectiveLiving - totalSpent;
 
-    const remainingBudget = config.livingBudget - totalSpent;
-
-    // перенос: сэкономлено (>0) или перерасход (<0) за все прошлые дни
     const carryIn = baselineDaily * completedDays - spentBeforeToday;
-    // сегодня доступно = дневная база + перенос с прошлых дней
     const todayAllowance = baselineDaily + carryIn;
     const leftToday = todayAllowance - spentToday;
-    // что перейдёт на завтра, если закрыть день с текущими тратами
     const carryTomorrow = carryIn + (baselineDaily - spentToday);
 
     let projectedTotal;
-    if (completedDays >= 1) {
-      const avg = spentBeforeToday / completedDays;
-      projectedTotal = spentBeforeToday + avg * daysRemaining;
-    } else projectedTotal = config.livingBudget;
-    const projectedSavings = config.baseSavings + (config.livingBudget - projectedTotal);
+    if (completedDays >= 1) { const avg = spentBeforeToday / completedDays; projectedTotal = spentBeforeToday + avg * daysRemaining; }
+    else projectedTotal = effectiveLiving;
+    const projectedLeftover = effectiveLiving - projectedTotal;
 
     const ratio = todayAllowance > 0 ? spentToday / todayAllowance : (spentToday > 0 ? 1.2 : 0);
     const status = ratio > 1 ? "red" : ratio > 0.75 ? "amber" : "green";
-    const endISO = addDays(config.startISO, config.totalDays - 1);
+    const endISO = addDays(period.startISO, period.totalDays - 1);
 
-    return { today, todayIndex, daysRemaining, spentToday, totalSpent, remainingBudget,
-      baselineDaily, carryIn, todayAllowance, leftToday, carryTomorrow,
-      projectedSavings, projectedTotal, ratio, status, endISO };
-  }, [config, entries]);
+    return { today, todayIndex, daysRemaining, spentToday, totalSpent, remainingBudget, budgetIncome,
+      effectiveLiving, baselineDaily, carryIn, todayAllowance, leftToday, carryTomorrow,
+      projectedTotal, projectedLeftover, ratio, status, endISO };
+  }, [period, entries, incomes]);
 
-  const statusColor = { green: C.green, amber: C.amber, red: C.red }[m.status];
-
+  // ---- spend handlers ----
   const addSpend = async (val) => {
-    const n = parseFloat(String(val).replace(",", "."));
-    if (!isFinite(n) || n <= 0) return;
+    const n = parseNum(val); if (!isFinite(n) || n <= 0 || !period) return;
     setInput("");
     const optimistic = { id: "tmp-" + Date.now(), date: todayStr(), amount: n };
     setEntries((prev) => [optimistic, ...prev]);
     const { data, error } = await supabase.from("entries")
-      .insert({ user_id: uid, spent_on: optimistic.date, amount: n }).select().single();
+      .insert({ user_id: uid, period_id: period.id, spent_on: optimistic.date, amount: n }).select().single();
     if (error) { setEntries((prev) => prev.filter((e) => e.id !== optimistic.id)); return; }
-    setEntries((prev) => prev.map((e) => e.id === optimistic.id
-      ? { id: data.id, date: data.spent_on, amount: Number(data.amount) } : e));
+    setEntries((prev) => prev.map((e) => e.id === optimistic.id ? { id: data.id, date: data.spent_on, amount: Number(data.amount) } : e));
   };
-  const removeEntry = async (id) => {
-    setEntries((prev) => prev.filter((e) => e.id !== id));
-    await supabase.from("entries").delete().eq("id", id);
+  const removeEntry = async (id) => { setEntries((prev) => prev.filter((e) => e.id !== id)); await supabase.from("entries").delete().eq("id", id); };
+
+  // ---- income handlers ----
+  const addIncome = async (amount, date, source) => {
+    const n = parseNum(amount); if (!isFinite(n) || n <= 0) return;
+    const { data } = await supabase.from("incomes").insert({
+      user_id: uid, amount: n, received_on: date || todayStr(), source: source || null, status: "pending",
+    }).select().single();
+    if (data) setIncomes((prev) => [{ id: data.id, date: data.received_on, amount: Number(data.amount),
+      source: data.source || "", status: data.status, periodId: null, goalId: null }, ...prev]);
+  };
+  const deleteIncome = async (income) => {
+    setIncomes((prev) => prev.filter((i) => i.id !== income.id));
+    await supabase.from("contributions").delete().eq("source_id", income.id);
+    setContribs((prev) => prev.filter((c) => c.sourceId !== income.id));
+    await supabase.from("incomes").delete().eq("id", income.id);
+  };
+  // route income to: 'budget' | 'savings' | 'pending'
+  const routeIncome = async (income, target, goalId = null) => {
+    // clear any previous savings contribution linked to this income
+    await supabase.from("contributions").delete().eq("source_id", income.id);
+    setContribs((prev) => prev.filter((c) => c.sourceId !== income.id));
+
+    if (target === "budget") {
+      await supabase.from("incomes").update({ status: "budget", period_id: period.id, goal_id: null }).eq("id", income.id);
+      setIncomes((prev) => prev.map((i) => i.id === income.id ? { ...i, status: "budget", periodId: period.id, goalId: null } : i));
+    } else if (target === "savings") {
+      await supabase.from("incomes").update({ status: "savings", period_id: null, goal_id: goalId }).eq("id", income.id);
+      const { data } = await supabase.from("contributions").insert({
+        user_id: uid, goal_id: goalId, amount: income.amount, source: "income", source_id: income.id,
+      }).select().single();
+      setIncomes((prev) => prev.map((i) => i.id === income.id ? { ...i, status: "savings", periodId: null, goalId } : i));
+      if (data) setContribs((prev) => [{ id: data.id, goalId, amount: Number(data.amount), source: "income",
+        sourceId: income.id, note: "", createdAt: data.created_at }, ...prev]);
+    } else {
+      await supabase.from("incomes").update({ status: "pending", period_id: null, goal_id: null }).eq("id", income.id);
+      setIncomes((prev) => prev.map((i) => i.id === income.id ? { ...i, status: "pending", periodId: null, goalId: null } : i));
+    }
+  };
+  // when user taps "в копилку": choose goal if several
+  const sendToSavings = (income) => {
+    if (goals.length === 0) { setTab("savings"); return; }
+    if (goals.length === 1) routeIncome(income, "savings", goals[0].id);
+    else setRouteFor(income);
   };
 
-  const openSettings = () => { setDraft(config); setShowSettings(true); };
-  const saveSettings = async () => {
-    setSaving(true);
-    const clean = {
-      livingBudget: parseFloat(String(draft.livingBudget).replace(",", ".")) || DEFAULT_CONFIG.livingBudget,
-      totalDays: parseInt(draft.totalDays) || DEFAULT_CONFIG.totalDays,
-      baseSavings: parseFloat(String(draft.baseSavings).replace(",", ".")) || DEFAULT_CONFIG.baseSavings,
-      startISO: draft.startISO || DEFAULT_CONFIG.startISO,
-    };
-    setConfig(clean);
-    await supabase.from("config").upsert({
-      user_id: uid, living_budget: clean.livingBudget, total_days: clean.totalDays,
-      start_date: clean.startISO, base_savings: clean.baseSavings, updated_at: new Date().toISOString(),
+  // ---- goal handlers ----
+  const addGoal = async (name, target, deadline, seed) => {
+    const { data } = await supabase.from("goals").insert({
+      user_id: uid, name: name || "Копилка",
+      target_amount: isFinite(parseNum(target)) ? parseNum(target) : null,
+      deadline: deadline || null, seed: isFinite(parseNum(seed)) ? parseNum(seed) : 0, status: "active",
+    }).select().single();
+    if (data) setGoals((prev) => [...prev, { id: data.id, name: data.name,
+      target: data.target_amount != null ? Number(data.target_amount) : null,
+      deadline: data.deadline, seed: Number(data.seed || 0), status: data.status }]);
+  };
+  const editGoal = async (goal, patch) => {
+    await supabase.from("goals").update({
+      name: patch.name, target_amount: patch.target, deadline: patch.deadline || null,
+    }).eq("id", goal.id);
+    setGoals((prev) => prev.map((g) => g.id === goal.id ? { ...g, ...patch } : g));
+  };
+  const archiveGoal = async (goal) => {
+    setGoals((prev) => prev.filter((g) => g.id !== goal.id));
+    await supabase.from("goals").update({ status: "archived" }).eq("id", goal.id);
+  };
+  const contribute = async (goalId, amount, note, source = "manual") => {
+    const n = parseNum(amount); if (!isFinite(n) || n === 0) return;
+    const { data } = await supabase.from("contributions").insert({
+      user_id: uid, goal_id: goalId, amount: n, source, note: note || null,
+    }).select().single();
+    if (data) setContribs((prev) => [{ id: data.id, goalId, amount: Number(data.amount), source,
+      sourceId: null, note: note || "", createdAt: data.created_at }, ...prev]);
+  };
+  const removeContribution = async (id) => {
+    setContribs((prev) => prev.filter((c) => c.id !== id));
+    await supabase.from("contributions").delete().eq("id", id);
+  };
+
+  // ---- close month / new period ----
+  const closeMonth = async ({ moveAmount, goalId, label, livingBudget, totalDays }) => {
+    if (moveAmount > 0 && goalId) {
+      await supabase.from("contributions").insert({
+        user_id: uid, goal_id: goalId, amount: moveAmount, source: "month_close", note: "Остаток периода",
+      });
+    }
+    await supabase.from("periods").update({ status: "closed" }).eq("id", period.id);
+    await supabase.from("periods").insert({
+      user_id: uid, label: label || "Новый период", living_budget: livingBudget,
+      total_days: totalDays, start_date: todayStr(), status: "active",
     });
-    setSaving(false); setShowSettings(false);
+    setShowClose(false);
+    setLoaded(false);
+    await load();
   };
 
-  const todayEntries = entries.filter((e) => e.date === m.today);
+  const saveSettings = async (draft) => {
+    const clean = {
+      livingBudget: parseNum(draft.livingBudget) || DEFAULT_PERIOD.livingBudget,
+      totalDays: parseInt(draft.totalDays) || DEFAULT_PERIOD.totalDays,
+      startISO: draft.startISO || period.startISO, label: draft.label || period.label,
+    };
+    setPeriod((p) => ({ ...p, ...clean }));
+    await supabase.from("periods").update({
+      living_budget: clean.livingBudget, total_days: clean.totalDays,
+      start_date: clean.startISO, label: clean.label,
+    }).eq("id", period.id);
+    setShowSettings(false);
+  };
 
-  if (!loaded) return <Splash />;
+  if (!loaded || !m) return <Splash />;
+
+  const pendingTotal = incomes.filter((i) => i.status === "pending").reduce((s, i) => s + i.amount, 0);
+  const savingsTotal = goals.reduce((s, g) => s + goalBalance(g, contribs), 0);
 
   return (
     <div style={wrap}>
       {/* header */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
         <div>
-          <div style={{ fontSize: 11, letterSpacing: 2, color: C.muted, textTransform: "uppercase" }}>Бюджет до зарплаты</div>
+          <div style={{ fontSize: 11, letterSpacing: 2, color: C.muted, textTransform: "uppercase" }}>{period.label}</div>
           <div style={{ fontSize: 13, marginTop: 3 }}>
             до {prettyDate(m.endISO)} · осталось <b style={{ color: "var(--accent, #3B82F6)" }}>{m.daysRemaining} дн.</b>
           </div>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
-          <button onClick={openSettings} style={iconBtn} aria-label="Настройки">⚙︎</button>
+          <button onClick={() => setShowSettings(true)} style={iconBtn} aria-label="Настройки">⚙︎</button>
           <button onClick={() => supabase.auth.signOut()} style={iconBtn} aria-label="Выйти">⏻</button>
         </div>
       </div>
 
-      {/* tabs */}
-      <div style={{ display: "flex", gap: 5, marginBottom: 14, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 13, padding: 4 }}>
-        {[["budget", "Бюджет"], ["chart", "График"], ["history", "История"]].map(([k, lbl]) => (
-          <button key={k} onClick={() => setTab(k)} style={{
-            flex: 1, padding: "10px", borderRadius: 10, fontWeight: 500, fontSize: 14,
-            background: tab === k ? "var(--accent, #3B82F6)" : "transparent", color: tab === k ? "#fff" : C.muted,
-            transition: "background .15s",
-          }}>{lbl}</button>
+      {/* primary tabs */}
+      <div style={tabBar}>
+        {[["budget", "Бюджет"], ["income", "Доходы"], ["savings", "Копилка"]].map(([k, lbl]) => (
+          <button key={k} onClick={() => setTab(k)} style={tabBtn(tab === k)}>
+            {lbl}{k === "income" && pendingTotal > 0.005 ? " •" : ""}
+          </button>
         ))}
       </div>
 
-      {tab === "budget" ? (
+      {tab === "budget" && (
         <>
-          {/* HERO — кольцо дня */}
-          <div style={{ ...panel, padding: "22px 20px 20px", display: "flex", flexDirection: "column", alignItems: "center" }}>
-            <div style={{ ...label, alignSelf: "flex-start" }}>Осталось на сегодня</div>
-
-            <div style={{ position: "relative", width: 184, height: 184, marginTop: 12 }}>
-              <svg width="184" height="184" viewBox="0 0 184 184">
-                <circle cx="92" cy="92" r="82" fill="none" stroke={C.surface2} strokeWidth="13" />
-                <circle cx="92" cy="92" r="82" fill="none" stroke={statusColor} strokeWidth="13"
-                  strokeLinecap="round" transform="rotate(-90 92 92)"
-                  strokeDasharray={2 * Math.PI * 82}
-                  strokeDashoffset={2 * Math.PI * 82 * (1 - Math.min(Math.max(m.ratio, 0), 1))}
-                  style={{ transition: "stroke-dashoffset .6s ease" }} />
-              </svg>
-              <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
-                <div style={{ fontFamily: mono, fontWeight: 700, fontSize: 34, letterSpacing: -0.5,
-                  color: m.leftToday < 0 ? C.red : C.text, whiteSpace: "nowrap" }}>
-                  {eur(m.leftToday)}
-                </div>
-                <div style={{ fontSize: 11, color: statusColor, marginTop: 5 }}>
-                  {m.status === "red" ? "перебор" : m.status === "amber" ? "почти лимит" : "в норме"}
-                </div>
-                <div style={{ fontSize: 11, color: C.faint, marginTop: 2 }}>из {eur(m.todayAllowance)}</div>
-              </div>
-            </div>
-
-            {m.carryIn > 0.005 && (
-              <div style={{ display: "flex", alignItems: "center", gap: 9, marginTop: 18, width: "100%",
-                background: "#12241C", border: "1px solid #1E4436", borderRadius: 12, padding: "10px 13px" }}>
-                <span style={{ fontFamily: mono, fontWeight: 700, fontSize: 20, color: C.green, whiteSpace: "nowrap" }}>+{eur(m.carryIn)}</span>
-                <span style={{ fontSize: 12.5, color: "#8FBFA8", lineHeight: 1.3 }}>сэкономлено — добавлено к лимиту</span>
-              </div>
-            )}
-            {m.carryIn < -0.005 && (
-              <div style={{ display: "flex", alignItems: "center", gap: 9, marginTop: 18, width: "100%",
-                background: "#241514", border: "1px solid #442020", borderRadius: 12, padding: "10px 13px" }}>
-                <span style={{ fontFamily: mono, fontWeight: 700, fontSize: 20, color: C.red, whiteSpace: "nowrap" }}>{eur(m.carryIn)}</span>
-                <span style={{ fontSize: 12.5, color: "#C39A9A", lineHeight: 1.3 }}>перерасход — вычтено из лимита</span>
-              </div>
-            )}
-
-            <div style={{ display: "flex", width: "100%", marginTop: 16, gap: 8 }}>
-              {[["база", eur(m.baselineDaily)], ["потрачено", eur(m.spentToday)],
-                ...(m.daysRemaining > 1 ? [["завтра", signEur(m.carryTomorrow)]] : [])].map(([k, v], i) => (
-                <div key={i} style={{ flex: 1, textAlign: "center", background: C.surface2, borderRadius: 10, padding: "8px 4px" }}>
-                  <div style={{ fontSize: 10, color: C.faint, textTransform: "uppercase", letterSpacing: 0.5 }}>{k}</div>
-                  <div style={{ fontFamily: mono, fontSize: 13, color: C.muted, marginTop: 3, whiteSpace: "nowrap" }}>{v}</div>
-                </div>
-              ))}
-            </div>
+          <div style={{ ...tabBar, marginBottom: 14 }}>
+            {[["overview", "Обзор"], ["chart", "График"], ["history", "История"]].map(([k, lbl]) => (
+              <button key={k} onClick={() => setSub(k)} style={tabBtn(sub === k, true)}>{lbl}</button>
+            ))}
           </div>
 
-          {/* log */}
-          <div style={{ ...panel, marginTop: 12 }}>
-            <div style={{ ...label, marginBottom: 10 }}>Записать трату</div>
-            <div style={{ display: "flex", gap: 8 }}>
-              <input type="number" inputMode="decimal" placeholder="0,00" value={input}
-                onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addSpend(input)}
-                style={{ ...inputStyle, flex: 1, fontSize: 20, fontWeight: 600 }} />
-              <button onClick={() => addSpend(input)} style={{ ...primaryBtn, padding: "0 20px" }}>+ Добавить</button>
-            </div>
-            <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
-              {[3, 5, 10, 15].map((v) => (
-                <button key={v} className="chip" onClick={() => addSpend(v)} style={chip}>+{v} €</button>
-              ))}
-            </div>
-            <div style={{ fontSize: 12, color: C.muted, marginTop: 10 }}>
-              Вносить можно сколько угодно раз за день — суммируется.
-            </div>
-          </div>
-
-          {/* today */}
-          {todayEntries.length > 0 && (
-            <div style={{ ...panel, marginTop: 12 }}>
-              <div style={{ ...label, marginBottom: 10 }}>Сегодня · {eur(m.spentToday)}</div>
-              {todayEntries.map((e) => (
-                <div key={e.id} style={rowItem}>
-                  <span style={{ fontFamily: mono, fontSize: 16 }}>{eur(e.amount)}</span>
-                  <button onClick={() => removeEntry(e.id)} style={delBtn}>удалить</button>
-                </div>
-              ))}
-            </div>
+          {sub === "overview" && (
+            <BudgetOverview m={m} period={period} input={input} setInput={setInput}
+              addSpend={addSpend} entries={entries} removeEntry={removeEntry}
+              savingsTotal={savingsTotal} onCloseMonth={() => setShowClose(true)} />
           )}
-
-          {/* накопления */}
-          <div style={{ ...panel, marginTop: 12 }}>
-            <div style={label}>Накопления к зарплате</div>
-            <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>прогноз при текущем темпе трат</div>
-            <div style={{ fontFamily: mono, fontWeight: 700, fontSize: 34, color: C.green, marginTop: 8, letterSpacing: -0.5 }}>
-              {eur(m.projectedSavings)}
-            </div>
-            <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
-              <MiniStat label={`Осталось из ${eur(config.livingBudget)}`} value={eur(m.remainingBudget)} color={m.remainingBudget < 0 ? C.red : C.text} />
-              <MiniStat label="Прогноз трат" value={eur(m.projectedTotal)} color={C.text} />
-            </div>
-          </div>
+          {sub === "chart" && <ChartView period={period} entries={entries} m={m} />}
+          {sub === "history" && <HistoryView period={period} entries={entries} m={m} onRemove={removeEntry} />}
         </>
-      ) : tab === "chart" ? (
-        <ChartView config={config} entries={entries} m={m} />
-      ) : (
-        <HistoryView config={config} entries={entries} m={m} onRemove={removeEntry} />
       )}
 
-      <div style={{ textAlign: "center", color: C.muted, fontSize: 11, marginTop: 16, lineHeight: 1.5 }}>
-        Тикеты на еду считаются отдельно и сюда не входят.<br />Подушка 350 € — неприкосновенна.
-      </div>
+      {tab === "income" && (
+        <IncomeView incomes={incomes} goals={goals} m={m}
+          addIncome={addIncome} deleteIncome={deleteIncome}
+          routeIncome={routeIncome} sendToSavings={sendToSavings} />
+      )}
+
+      {tab === "savings" && (
+        <SavingsView goals={goals} contribs={contribs}
+          addGoal={addGoal} editGoal={editGoal} archiveGoal={archiveGoal}
+          contribute={contribute} removeContribution={removeContribution} />
+      )}
 
       {showSettings && (
-        <div style={overlay} onClick={() => setShowSettings(false)}>
-          <div style={modal} onClick={(e) => e.stopPropagation()}>
-            <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>Настройки</div>
-            <div style={{ fontSize: 12, color: C.muted, marginBottom: 16 }}>После двух недель можно поднять бюджет здесь.</div>
-
-            <div style={{ fontSize: 12, color: C.muted, marginBottom: 8 }}>Акцентный цвет</div>
-            <div style={{ display: "flex", gap: 10, marginBottom: 18 }}>
-              {ACCENTS.map((a) => (
-                <button key={a.id} onClick={() => setAccent(a.color)} aria-label={a.id} style={{
-                  width: 30, height: 30, borderRadius: "50%", background: a.color,
-                  border: accent === a.color ? "2px solid #fff" : "2px solid transparent",
-                  boxShadow: accent === a.color ? `0 0 0 2px ${a.color}` : "none", cursor: "pointer",
-                }} />
-              ))}
-            </div>
-
-            <Field label="Живые деньги, €" value={draft.livingBudget} onChange={(v) => setDraft({ ...draft, livingBudget: v })} />
-            <Field label="Всего дней" value={draft.totalDays} onChange={(v) => setDraft({ ...draft, totalDays: v })} />
-            <Field label="Старт (ГГГГ-ММ-ДД)" value={draft.startISO} type="text" onChange={(v) => setDraft({ ...draft, startISO: v })} />
-            <Field label="База накоплений, €" value={draft.baseSavings} onChange={(v) => setDraft({ ...draft, baseSavings: v })} />
-            <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
-              <button onClick={() => setShowSettings(false)} style={{ ...chip, flex: 1, padding: "12px" }}>Отмена</button>
-              <button disabled={saving} onClick={saveSettings} style={{ ...primaryBtn, flex: 1, padding: "12px" }}>
-                {saving ? "…" : "Сохранить"}
-              </button>
-            </div>
-          </div>
-        </div>
+        <SettingsModal period={period} accent={accent} setAccent={setAccent}
+          onClose={() => setShowSettings(false)} onSave={saveSettings} />
+      )}
+      {routeFor && (
+        <GoalPicker goals={goals} contribs={contribs} onPick={(gid) => { routeIncome(routeFor, "savings", gid); setRouteFor(null); }}
+          onClose={() => setRouteFor(null)} />
+      )}
+      {showClose && (
+        <CloseMonthModal m={m} goals={goals} contribs={contribs}
+          onClose={() => setShowClose(false)} onConfirm={closeMonth} />
       )}
     </div>
   );
 }
 
-// ---------- chart page ----------
-function ChartView({ config, entries, m }) {
+// ---------- BUDGET · overview ----------
+function BudgetOverview({ m, period, input, setInput, addSpend, entries, removeEntry, savingsTotal, onCloseMonth }) {
+  const statusColor = { green: C.green, amber: C.amber, red: C.red }[m.status];
+  const todayEntries = entries.filter((e) => e.date === m.today);
+  return (
+    <>
+      <div style={{ ...panel, padding: "22px 20px 20px", display: "flex", flexDirection: "column", alignItems: "center" }}>
+        <div style={{ ...label, alignSelf: "flex-start" }}>Осталось на сегодня</div>
+        <div style={{ position: "relative", width: 184, height: 184, marginTop: 12 }}>
+          <svg width="184" height="184" viewBox="0 0 184 184">
+            <circle cx="92" cy="92" r="82" fill="none" stroke={C.surface2} strokeWidth="13" />
+            <circle cx="92" cy="92" r="82" fill="none" stroke={statusColor} strokeWidth="13"
+              strokeLinecap="round" transform="rotate(-90 92 92)"
+              strokeDasharray={2 * Math.PI * 82}
+              strokeDashoffset={2 * Math.PI * 82 * (1 - Math.min(Math.max(m.ratio, 0), 1))}
+              style={{ transition: "stroke-dashoffset .6s ease" }} />
+          </svg>
+          <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+            <div style={{ fontFamily: mono, fontWeight: 700, fontSize: 34, letterSpacing: -0.5, color: m.leftToday < 0 ? C.red : C.text, whiteSpace: "nowrap" }}>{eur(m.leftToday)}</div>
+            <div style={{ fontSize: 11, color: statusColor, marginTop: 5 }}>{m.status === "red" ? "перебор" : m.status === "amber" ? "почти лимит" : "в норме"}</div>
+            <div style={{ fontSize: 11, color: C.faint, marginTop: 2 }}>из {eur(m.todayAllowance)}</div>
+          </div>
+        </div>
+
+        {m.carryIn > 0.005 && (
+          <div style={{ display: "flex", alignItems: "center", gap: 9, marginTop: 18, width: "100%", background: "#12241C", border: "1px solid #1E4436", borderRadius: 12, padding: "10px 13px" }}>
+            <span style={{ fontFamily: mono, fontWeight: 700, fontSize: 20, color: C.green, whiteSpace: "nowrap" }}>+{eur(m.carryIn)}</span>
+            <span style={{ fontSize: 12.5, color: "#8FBFA8", lineHeight: 1.3 }}>сэкономлено — добавлено к лимиту</span>
+          </div>
+        )}
+        {m.carryIn < -0.005 && (
+          <div style={{ display: "flex", alignItems: "center", gap: 9, marginTop: 18, width: "100%", background: "#241514", border: "1px solid #442020", borderRadius: 12, padding: "10px 13px" }}>
+            <span style={{ fontFamily: mono, fontWeight: 700, fontSize: 20, color: C.red, whiteSpace: "nowrap" }}>{eur(m.carryIn)}</span>
+            <span style={{ fontSize: 12.5, color: "#C39A9A", lineHeight: 1.3 }}>перерасход — вычтено из лимита</span>
+          </div>
+        )}
+
+        <div style={{ display: "flex", width: "100%", marginTop: 16, gap: 8 }}>
+          {[["база", eur(m.baselineDaily)], ["потрачено", eur(m.spentToday)],
+            ...(m.daysRemaining > 1 ? [["завтра", signEur(m.carryTomorrow)]] : [])].map(([k, v], i) => (
+            <div key={i} style={{ flex: 1, textAlign: "center", background: C.surface2, borderRadius: 10, padding: "8px 4px" }}>
+              <div style={{ fontSize: 10, color: C.faint, textTransform: "uppercase", letterSpacing: 0.5 }}>{k}</div>
+              <div style={{ fontFamily: mono, fontSize: 13, color: C.muted, marginTop: 3, whiteSpace: "nowrap" }}>{v}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {m.budgetIncome > 0.005 && (
+        <div style={{ ...panel, marginTop: 12, display: "flex", alignItems: "center", gap: 9, padding: "12px 16px" }}>
+          <span style={{ fontFamily: mono, fontWeight: 700, color: C.green }}>+{eur(m.budgetIncome)}</span>
+          <span style={{ fontSize: 12.5, color: C.muted }}>поступлений добавлено в бюджет месяца</span>
+        </div>
+      )}
+
+      {/* record */}
+      <div style={{ ...panel, marginTop: 12 }}>
+        <div style={{ ...label, marginBottom: 10 }}>Записать трату</div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <input type="number" inputMode="decimal" placeholder="0,00" value={input}
+            onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addSpend(input)}
+            style={{ ...inputStyle, flex: 1, fontSize: 20, fontWeight: 600 }} />
+          <button onClick={() => addSpend(input)} style={{ ...primaryBtn, padding: "0 20px" }}>+ Добавить</button>
+        </div>
+        <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+          {[3, 5, 10, 15].map((v) => (<button key={v} onClick={() => addSpend(v)} style={chip}>+{v} €</button>))}
+        </div>
+      </div>
+
+      {todayEntries.length > 0 && (
+        <div style={{ ...panel, marginTop: 12 }}>
+          <div style={{ ...label, marginBottom: 10 }}>Сегодня · {eur(m.spentToday)}</div>
+          {todayEntries.map((e) => (
+            <div key={e.id} style={rowItem}>
+              <span style={{ fontFamily: mono, fontSize: 16 }}>{eur(e.amount)}</span>
+              <button onClick={() => removeEntry(e.id)} style={delBtn}>удалить</button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* forecast */}
+      <div style={{ ...panel, marginTop: 12 }}>
+        <div style={label}>Прогноз остатка к концу периода</div>
+        <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>это можно будет отложить в копилку</div>
+        <div style={{ fontFamily: mono, fontWeight: 700, fontSize: 34, color: m.projectedLeftover < 0 ? C.red : C.green, marginTop: 8, letterSpacing: -0.5 }}>
+          {eur(m.projectedLeftover)}
+        </div>
+        <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
+          <MiniStat label={`Осталось из ${eur(m.effectiveLiving)}`} value={eur(m.remainingBudget)} color={m.remainingBudget < 0 ? C.red : C.text} />
+          <MiniStat label="Прогноз трат" value={eur(m.projectedTotal)} color={C.text} />
+        </div>
+        <div style={{ marginTop: 12, fontSize: 12.5, color: C.muted }}>
+          Всего в копилках: <b style={{ color: C.text, fontFamily: mono }}>{eur(savingsTotal)}</b>
+        </div>
+      </div>
+
+      <button onClick={onCloseMonth} style={{ ...chip, marginTop: 12, padding: "13px", width: "100%", fontWeight: 600 }}>
+        Закрыть период · начать новый месяц
+      </button>
+
+      <div style={{ textAlign: "center", color: C.muted, fontSize: 11, marginTop: 16, lineHeight: 1.5 }}>
+        Тикеты на еду считаются отдельно.<br />Дневной лимит фиксирован; поступления — отдельно, во вкладке «Доходы».
+      </div>
+    </>
+  );
+}
+
+// ---------- INCOME ----------
+function IncomeView({ incomes, goals, m, addIncome, deleteIncome, routeIncome, sendToSavings }) {
+  const [amount, setAmount] = useState("");
+  const [date, setDate] = useState(todayStr());
+  const [source, setSource] = useState("");
+  const [adding, setAdding] = useState(false);
+
+  const goalName = (id) => goals.find((g) => g.id === id)?.name || "копилка";
+  const pending = incomes.filter((i) => i.status === "pending");
+  const inBudget = incomes.filter((i) => i.status === "budget").reduce((s, i) => s + i.amount, 0);
+  const inSavings = incomes.filter((i) => i.status === "savings").reduce((s, i) => s + i.amount, 0);
+  const pendingSum = pending.reduce((s, i) => s + i.amount, 0);
+
+  const submit = async () => { await addIncome(amount, date, source); setAmount(""); setSource(""); setDate(todayStr()); setAdding(false); };
+
+  return (
+    <>
+      <div style={panel}>
+        <div style={label}>Поступления сверх бюджета</div>
+        <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>подарки, бонусы, разовые деньги — не влияют на дневной лимит, пока ты сам не решишь</div>
+        <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
+          <MiniStat label="Не распределено" value={eur(pendingSum)} color={pendingSum > 0 ? C.amber : C.muted} />
+          <MiniStat label="В бюджете" value={eur(inBudget)} color={C.text} />
+          <MiniStat label="В копилке" value={eur(inSavings)} color={C.green} />
+        </div>
+      </div>
+
+      {!adding ? (
+        <button onClick={() => setAdding(true)} style={{ ...primaryBtn, marginTop: 12, padding: "13px", width: "100%" }}>+ Поступление</button>
+      ) : (
+        <div style={{ ...panel, marginTop: 12 }}>
+          <div style={{ ...label, marginBottom: 10 }}>Новое поступление</div>
+          <input type="number" inputMode="decimal" placeholder="Сумма, €" value={amount}
+            onChange={(e) => setAmount(e.target.value)} style={{ ...inputStyle, fontSize: 20, fontWeight: 600 }} />
+          <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={{ ...inputStyle, marginTop: 10 }} />
+          <input type="text" placeholder="Источник (необязательно): подарок, бонус…" value={source}
+            onChange={(e) => setSource(e.target.value)} style={{ ...inputStyle, marginTop: 10 }} />
+          <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+            <button onClick={() => { setAdding(false); setAmount(""); setSource(""); }} style={{ ...chip, flex: 1, padding: "12px" }}>Отмена</button>
+            <button onClick={submit} style={{ ...primaryBtn, flex: 1, padding: "12px" }}>Добавить</button>
+          </div>
+        </div>
+      )}
+
+      <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 10 }}>
+        {incomes.length === 0 && (
+          <div style={panel}><div style={{ color: C.muted, fontSize: 14, padding: "18px 0", textAlign: "center" }}>Поступлений пока нет.</div></div>
+        )}
+        {incomes.map((i) => {
+          const badge = i.status === "budget" ? { t: "в бюджете", c: C.blue }
+            : i.status === "savings" ? { t: "в копилке · " + goalName(i.goalId), c: C.green }
+            : { t: "не распределено", c: C.amber };
+          return (
+            <div key={i.id} style={panel}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                <span style={{ fontFamily: mono, fontWeight: 700, fontSize: 22 }}>+{eur(i.amount)}</span>
+                <span style={{ fontSize: 11, color: badge.c }}>{badge.t}</span>
+              </div>
+              <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>
+                {prettyDate(i.date)}{i.source ? " · " + i.source : ""}
+              </div>
+              <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
+                {i.status !== "budget" && <button onClick={() => routeIncome(i, "budget")} style={miniBtn}>В бюджет</button>}
+                {i.status !== "savings" && <button onClick={() => sendToSavings(i)} style={miniBtn}>В копилку</button>}
+                {i.status !== "pending" && <button onClick={() => routeIncome(i, "pending")} style={miniBtn}>Вернуть</button>}
+                <button onClick={() => deleteIncome(i)} style={{ ...miniBtn, color: C.red, borderColor: "#3a2626" }}>Удалить</button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
+// ---------- SAVINGS ----------
+function SavingsView({ goals, contribs, addGoal, editGoal, archiveGoal, contribute, removeContribution }) {
+  const [creating, setCreating] = useState(false);
+  const [nm, setNm] = useState(""); const [tg, setTg] = useState(""); const [dl, setDl] = useState(""); const [sd, setSd] = useState("");
+  const total = goals.reduce((s, g) => s + goalBalance(g, contribs), 0);
+
+  const submit = async () => { await addGoal(nm, tg, dl, sd); setNm(""); setTg(""); setDl(""); setSd(""); setCreating(false); };
+
+  return (
+    <>
+      <div style={panel}>
+        <div style={label}>Все накопления</div>
+        <div style={{ fontFamily: mono, fontWeight: 700, fontSize: 34, color: C.green, marginTop: 8, letterSpacing: -0.5 }}>{eur(total)}</div>
+        <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>сумма по всем копилкам</div>
+      </div>
+
+      {!creating ? (
+        <button onClick={() => setCreating(true)} style={{ ...primaryBtn, marginTop: 12, padding: "13px", width: "100%" }}>+ Новая копилка</button>
+      ) : (
+        <div style={{ ...panel, marginTop: 12 }}>
+          <div style={{ ...label, marginBottom: 10 }}>Новая копилка</div>
+          <input type="text" placeholder="Название (Мотоцикл, Отпуск…)" value={nm} onChange={(e) => setNm(e.target.value)} style={inputStyle} />
+          <input type="number" inputMode="decimal" placeholder="Цель, € (необязательно)" value={tg} onChange={(e) => setTg(e.target.value)} style={{ ...inputStyle, marginTop: 10 }} />
+          <input type="date" value={dl} onChange={(e) => setDl(e.target.value)} style={{ ...inputStyle, marginTop: 10 }} />
+          <input type="number" inputMode="decimal" placeholder="Уже накоплено, € (стартовая сумма)" value={sd} onChange={(e) => setSd(e.target.value)} style={{ ...inputStyle, marginTop: 10 }} />
+          <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+            <button onClick={() => setCreating(false)} style={{ ...chip, flex: 1, padding: "12px" }}>Отмена</button>
+            <button onClick={submit} style={{ ...primaryBtn, flex: 1, padding: "12px" }}>Создать</button>
+          </div>
+        </div>
+      )}
+
+      <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 12 }}>
+        {goals.map((g) => (
+          <GoalCard key={g.id} goal={g} contribs={contribs}
+            onContribute={contribute} onRemoveContribution={removeContribution}
+            onEdit={editGoal} onArchive={archiveGoal} />
+        ))}
+      </div>
+    </>
+  );
+}
+
+function GoalCard({ goal, contribs, onContribute, onRemoveContribution, onEdit, onArchive }) {
+  const [open, setOpen] = useState(false);
+  const [amt, setAmt] = useState("");
+  const [mode, setMode] = useState(null); // 'add' | 'sub' | 'edit'
+  const [enm, setEnm] = useState(goal.name); const [etg, setEtg] = useState(goal.target ?? ""); const [edl, setEdl] = useState(goal.deadline ?? "");
+
+  const list = contribs.filter((c) => c.goalId === goal.id);
+  const bal = goalBalance(goal, contribs);
+  const pct = goal.target ? Math.min(100, Math.max(0, (bal / goal.target) * 100)) : null;
+
+  let daysLeft = null, perDay = null;
+  if (goal.deadline) {
+    daysLeft = daysBetween(todayStr(), goal.deadline);
+    if (goal.target && daysLeft > 0) perDay = (goal.target - bal) / daysLeft;
+  }
+
+  const doAdd = async () => { await onContribute(goal.id, amt, null, "manual"); setAmt(""); setMode(null); };
+  const doSub = async () => { const n = parseNum(amt); if (isFinite(n) && n > 0) await onContribute(goal.id, -n, null, "manual"); setAmt(""); setMode(null); };
+  const doEdit = async () => { await onEdit(goal, { name: enm || goal.name, target: isFinite(parseNum(etg)) ? parseNum(etg) : null, deadline: edl || null }); setMode(null); };
+
+  const srcLabel = { income: "поступление", month_close: "остаток периода", manual: "вручную" };
+
+  return (
+    <div style={panel}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+        <div style={{ fontSize: 16, fontWeight: 700 }}>{goal.name}</div>
+        <button onClick={() => setMode(mode === "edit" ? null : "edit")} style={{ ...miniBtn, padding: "5px 10px" }}>✎</button>
+      </div>
+
+      {mode === "edit" ? (
+        <div style={{ marginTop: 10 }}>
+          <input type="text" value={enm} onChange={(e) => setEnm(e.target.value)} placeholder="Название" style={inputStyle} />
+          <input type="number" inputMode="decimal" value={etg} onChange={(e) => setEtg(e.target.value)} placeholder="Цель, € (пусто = без цели)" style={{ ...inputStyle, marginTop: 8 }} />
+          <input type="date" value={edl || ""} onChange={(e) => setEdl(e.target.value)} style={{ ...inputStyle, marginTop: 8 }} />
+          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+            <button onClick={() => onArchive(goal)} style={{ ...miniBtn, color: C.red, borderColor: "#3a2626" }}>Удалить копилку</button>
+            <div style={{ flex: 1 }} />
+            <button onClick={() => setMode(null)} style={miniBtn}>Отмена</button>
+            <button onClick={doEdit} style={{ ...primaryBtn, padding: "8px 14px", fontSize: 13 }}>Сохранить</button>
+          </div>
+        </div>
+      ) : (
+        <>
+          <div style={{ fontFamily: mono, fontWeight: 700, fontSize: 30, color: C.green, marginTop: 6, letterSpacing: -0.5 }}>{eur(bal)}</div>
+          {goal.target != null && (
+            <>
+              <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>из {eur(goal.target)} · осталось {eur(Math.max(0, goal.target - bal))}</div>
+              <div style={{ height: 8, background: C.surface2, borderRadius: 6, marginTop: 8, overflow: "hidden" }}>
+                <div style={{ height: "100%", width: pct + "%", background: pct >= 100 ? C.green : "var(--accent, #3B82F6)", transition: "width .5s" }} />
+              </div>
+            </>
+          )}
+          {goal.deadline && (
+            <div style={{ fontSize: 12, color: C.muted, marginTop: 8 }}>
+              срок {prettyDate(goal.deadline)}{daysLeft != null ? (daysLeft >= 0 ? ` · ${daysLeft} дн.` : " · срок прошёл") : ""}
+              {perDay != null && perDay > 0 ? ` · нужно ${eur(perDay)}/день` : ""}
+            </div>
+          )}
+
+          <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+            <button onClick={() => setMode(mode === "add" ? null : "add")} style={{ ...miniBtn, flex: 1 }}>Пополнить</button>
+            <button onClick={() => setMode(mode === "sub" ? null : "sub")} style={{ ...miniBtn, flex: 1 }}>Снять</button>
+          </div>
+          {(mode === "add" || mode === "sub") && (
+            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+              <input type="number" inputMode="decimal" placeholder="Сумма, €" value={amt} onChange={(e) => setAmt(e.target.value)} style={{ ...inputStyle, flex: 1 }} />
+              <button onClick={mode === "add" ? doAdd : doSub} style={{ ...primaryBtn, padding: "0 18px" }}>{mode === "add" ? "＋" : "－"}</button>
+            </div>
+          )}
+
+          {list.length > 0 && (
+            <button onClick={() => setOpen(!open)} style={{ background: "none", color: C.muted, fontSize: 12, marginTop: 12 }}>
+              {open ? "Скрыть историю" : `История взносов (${list.length})`}
+            </button>
+          )}
+          {open && (
+            <div style={{ marginTop: 6 }}>
+              {list.map((c) => (
+                <div key={c.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 0", borderTop: `1px solid ${C.border}` }}>
+                  <div>
+                    <div style={{ fontFamily: mono, fontSize: 15, color: c.amount < 0 ? C.red : C.green }}>{signEur(c.amount)}</div>
+                    <div style={{ fontSize: 11, color: C.faint }}>{srcLabel[c.source] || c.source}{c.note ? " · " + c.note : ""}</div>
+                  </div>
+                  <button onClick={() => onRemoveContribution(c.id)} style={delBtn}>удалить</button>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ---------- CHART ----------
+function ChartView({ period, entries, m }) {
   const data = useMemo(() => {
     const arr = [];
     for (let i = 0; i <= m.todayIndex; i++) {
-      const date = addDays(config.startISO, i);
+      const date = addDays(period.startISO, i);
       const spent = entries.filter((e) => e.date === date).reduce((s, e) => s + e.amount, 0);
       arr.push({ i, date, spent });
     }
     return arr;
-  }, [config, entries, m.todayIndex]);
+  }, [period, entries, m.todayIndex]);
 
   const target = m.baselineDaily;
   const maxVal = Math.max(target * 1.4, ...data.map((d) => d.spent), 1);
-
   const W = 320, H = 180, padL = 8, padR = 8, padT = 10, padB = 22;
   const innerW = W - padL - padR, innerH = H - padT - padB;
-  const n = data.length;
-  const gap = 3;
+  const n = data.length, gap = 3;
   const bw = n > 0 ? Math.max(3, innerW / n - gap) : 0;
   const yFor = (v) => padT + innerH - (v / maxVal) * innerH;
   const targetY = yFor(target);
-
   const totalSpent = data.reduce((s, d) => s + d.spent, 0);
-  const daysCounted = data.length;
-  const avg = daysCounted ? totalSpent / daysCounted : 0;
+  const avg = data.length ? totalSpent / data.length : 0;
 
   return (
     <>
-      <div style={{ ...panel }}>
+      <div style={panel}>
         <div style={label}>Расходы по дням</div>
-        <div style={{ fontSize: 12, color: C.muted, marginTop: 3, marginBottom: 12 }}>
-          пунктир — ровный лимит {eur(target)}/день
-        </div>
+        <div style={{ fontSize: 12, color: C.muted, marginTop: 3, marginBottom: 12 }}>пунктир — ровный лимит {eur(target)}/день</div>
         {n === 0 ? (
-          <div style={{ color: C.muted, fontSize: 14, padding: "24px 0", textAlign: "center" }}>
-            Пока нет данных. Внеси первую трату.
-          </div>
+          <div style={{ color: C.muted, fontSize: 14, padding: "24px 0", textAlign: "center" }}>Пока нет данных. Внеси первую трату.</div>
         ) : (
           <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: "auto", display: "block" }}>
-            {/* target line */}
-            <line x1={padL} y1={targetY} x2={W - padR} y2={targetY}
-              stroke={"var(--accent, #3B82F6)"} strokeWidth="1" strokeDasharray="4 4" opacity="0.7" />
+            <line x1={padL} y1={targetY} x2={W - padR} y2={targetY} stroke={"var(--accent, #3B82F6)"} strokeWidth="1" strokeDasharray="4 4" opacity="0.7" />
             {data.map((d, k) => {
               const x = padL + k * (bw + gap);
               const y = yFor(d.spent);
@@ -453,12 +760,9 @@ function ChartView({ config, entries, m }) {
               const col = d.spent === 0 ? C.green : over ? C.amber : C.green;
               return (
                 <g key={d.date}>
-                  <rect x={x} y={d.spent === 0 ? padT + innerH - 2 : y} width={bw}
-                    height={d.spent === 0 ? 2 : Math.max(h, 1)} rx="2" fill={col}
-                    opacity={d.date === m.today ? 1 : 0.85} />
+                  <rect x={x} y={d.spent === 0 ? padT + innerH - 2 : y} width={bw} height={d.spent === 0 ? 2 : Math.max(h, 1)} rx="2" fill={col} opacity={d.date === m.today ? 1 : 0.85} />
                   {(k === 0 || k === n - 1 || k % Math.ceil(n / 6) === 0) && (
-                    <text x={x + bw / 2} y={H - 8} fill={C.muted} fontSize="8"
-                      textAnchor="middle" fontFamily={mono}>{dateFromISO(d.date).getDate()}</text>
+                    <text x={x + bw / 2} y={H - 8} fill={C.muted} fontSize="8" textAnchor="middle" fontFamily={mono}>{dateFromISO(d.date).getDate()}</text>
                   )}
                 </g>
               );
@@ -470,122 +774,89 @@ function ChartView({ config, entries, m }) {
           <MiniStat label="Среднее в день" value={eur(avg)} color={avg > target ? C.amber : C.green} />
         </div>
       </div>
-
-      {/* cumulative vs ideal */}
       <div style={{ ...panel, marginTop: 12 }}>
         <div style={label}>Накопительно против плана</div>
-        <div style={{ fontSize: 12, color: C.muted, marginTop: 3, marginBottom: 12 }}>
-          синяя — план, зелёная/красная — факт
-        </div>
-        <CumulativeChart data={data} target={target} today={m.today} />
+        <div style={{ fontSize: 12, color: C.muted, marginTop: 3, marginBottom: 12 }}>линия плана и факт</div>
+        <CumulativeChart data={data} target={target} />
       </div>
     </>
   );
 }
 
-function CumulativeChart({ data, target, today }) {
+function CumulativeChart({ data, target }) {
   const W = 320, H = 150, padL = 8, padR = 8, padT = 10, padB = 20;
   const innerW = W - padL - padR, innerH = H - padT - padB;
   const n = data.length;
   if (n === 0) return <div style={{ color: C.muted, fontSize: 14, padding: "20px 0", textAlign: "center" }}>Нет данных</div>;
-
   let cum = 0;
   const actual = data.map((d, k) => { cum += d.spent; return { k, v: cum }; });
-  const idealMax = target * n;
-  const actualMax = cum;
+  const idealMax = target * n, actualMax = cum;
   const maxV = Math.max(idealMax, actualMax, 1);
   const xFor = (k) => padL + (n === 1 ? innerW / 2 : (k / (n - 1)) * innerW);
   const yFor = (v) => padT + innerH - (v / maxV) * innerH;
-
   const idealPath = `M ${xFor(0)} ${yFor(target)} L ${xFor(n - 1)} ${yFor(idealMax)}`;
   const actualPts = actual.map((p) => `${xFor(p.k)},${yFor(p.v)}`).join(" ");
   const actualColor = actualMax <= target * n ? C.green : C.red;
-
   return (
     <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: "auto", display: "block" }}>
       <line x1={padL} y1={yFor(0)} x2={W - padR} y2={yFor(0)} stroke={C.border} strokeWidth="1" />
       <path d={idealPath} stroke={"var(--accent, #3B82F6)"} strokeWidth="1.5" fill="none" strokeDasharray="4 4" opacity="0.7" />
       <polyline points={actualPts} stroke={actualColor} strokeWidth="2" fill="none" strokeLinejoin="round" strokeLinecap="round" />
-      {actual.map((p) => (
-        <circle key={p.k} cx={xFor(p.k)} cy={yFor(p.v)} r={p.k === n - 1 ? 3 : 1.5} fill={actualColor} />
-      ))}
+      {actual.map((p) => (<circle key={p.k} cx={xFor(p.k)} cy={yFor(p.v)} r={p.k === n - 1 ? 3 : 1.5} fill={actualColor} />))}
     </svg>
   );
 }
 
-// ---------- history page (grouped by week, expandable days, delete any entry) ----------
-function HistoryView({ config, entries, m, onRemove }) {
+// ---------- HISTORY ----------
+function HistoryView({ period, entries, m, onRemove }) {
   const [open, setOpen] = useState(m.today);
   const weeklyTarget = m.baselineDaily * 7;
-
   const weeks = useMemo(() => {
     const byDate = {};
     entries.forEach((e) => { (byDate[e.date] ||= []).push(e); });
     const days = Object.entries(byDate).map(([date, list]) => ({
-      date,
-      weekIdx: Math.floor(daysBetween(config.startISO, date) / 7),
+      date, weekIdx: Math.floor(daysBetween(period.startISO, date) / 7),
       total: list.reduce((s, e) => s + e.amount, 0),
       list: [...list].sort((a, b) => (a.id < b.id ? 1 : -1)),
     }));
     const wk = {};
     days.forEach((d) => { (wk[d.weekIdx] ||= []).push(d); });
-    return Object.entries(wk)
-      .map(([idx, dayList]) => ({
-        idx: Number(idx),
-        days: dayList.sort((a, b) => (a.date < b.date ? 1 : -1)),
-        total: dayList.reduce((s, d) => s + d.total, 0),
-      }))
-      .sort((a, b) => b.idx - a.idx);
-  }, [entries, config.startISO]);
+    return Object.entries(wk).map(([idx, dayList]) => ({
+      idx: Number(idx), days: dayList.sort((a, b) => (a.date < b.date ? 1 : -1)),
+      total: dayList.reduce((s, d) => s + d.total, 0),
+    })).sort((a, b) => b.idx - a.idx);
+  }, [entries, period.startISO]);
 
   if (weeks.length === 0) {
-    return (
-      <div style={panel}>
-        <div style={label}>История</div>
-        <div style={{ color: C.muted, fontSize: 14, padding: "24px 0", textAlign: "center" }}>
-          Пока пусто. Записи появятся здесь по неделям.
-        </div>
-      </div>
-    );
+    return (<div style={panel}><div style={label}>История</div>
+      <div style={{ color: C.muted, fontSize: 14, padding: "24px 0", textAlign: "center" }}>Пока пусто. Записи появятся здесь по неделям.</div></div>);
   }
-
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
       {weeks.map((w) => {
-        const wStart = addDays(config.startISO, w.idx * 7);
-        const wEnd = addDays(config.startISO, w.idx * 7 + 6);
+        const wStart = addDays(period.startISO, w.idx * 7);
+        const wEnd = addDays(period.startISO, w.idx * 7 + 6);
         const over = w.total > weeklyTarget;
         return (
           <div key={w.idx} style={panel}>
             <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 4 }}>
               <div style={label}>Неделя {w.idx + 1}</div>
-              <div style={{ fontFamily: mono, fontSize: 18, fontWeight: 700, color: over ? C.amber : C.green }}>
-                {eur(w.total)}
-              </div>
+              <div style={{ fontFamily: mono, fontSize: 18, fontWeight: 700, color: over ? C.amber : C.green }}>{eur(w.total)}</div>
             </div>
             <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: C.muted, marginBottom: 6 }}>
-              <span>{prettyDate(wStart)} – {prettyDate(wEnd)}</span>
-              <span>лимит {eur(weeklyTarget)}</span>
+              <span>{prettyDate(wStart)} – {prettyDate(wEnd)}</span><span>лимит {eur(weeklyTarget)}</span>
             </div>
-
             {w.days.map((d) => {
               const isOpen = open === d.date;
               const dOver = d.total > m.baselineDaily;
               return (
                 <div key={d.date} style={{ borderTop: `1px solid ${C.border}` }}>
-                  <button onClick={() => setOpen(isOpen ? null : d.date)} style={{
-                    width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between",
-                    padding: "11px 0", background: "none", color: C.text,
-                  }}>
+                  <button onClick={() => setOpen(isOpen ? null : d.date)} style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "11px 0", background: "none", color: C.text }}>
                     <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
                       <span style={{ color: C.muted, fontSize: 10, transform: isOpen ? "rotate(90deg)" : "none", transition: "transform .15s" }}>▶</span>
-                      <span style={{ fontSize: 14 }}>
-                        {prettyDate(d.date)}{d.date === m.today ? " · сегодня" : ""}
-                      </span>
+                      <span style={{ fontSize: 14 }}>{prettyDate(d.date)}{d.date === m.today ? " · сегодня" : ""}</span>
                     </span>
-                    <span style={{ fontFamily: mono, fontSize: 15, color: d.total === 0 ? C.muted : dOver ? C.amber : C.green }}>
-                      {eur(d.total)}
-                    </span>
+                    <span style={{ fontFamily: mono, fontSize: 15, color: d.total === 0 ? C.muted : dOver ? C.amber : C.green }}>{eur(d.total)}</span>
                   </button>
                   {isOpen && (
                     <div style={{ paddingBottom: 8 }}>
@@ -607,6 +878,113 @@ function HistoryView({ config, entries, m, onRemove }) {
   );
 }
 
+// ---------- MODALS ----------
+function SettingsModal({ period, accent, setAccent, onClose, onSave }) {
+  const [draft, setDraft] = useState({ label: period.label, livingBudget: period.livingBudget, totalDays: period.totalDays, startISO: period.startISO });
+  const [saving, setSaving] = useState(false);
+  return (
+    <div style={overlay} onClick={onClose}>
+      <div style={modal} onClick={(e) => e.stopPropagation()}>
+        <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>Настройки периода</div>
+        <div style={{ fontSize: 12, color: C.muted, marginBottom: 16 }}>Можно подправить текущий бюджет и цвет.</div>
+        <div style={{ fontSize: 12, color: C.muted, marginBottom: 8 }}>Акцентный цвет</div>
+        <div style={{ display: "flex", gap: 10, marginBottom: 18 }}>
+          {ACCENTS.map((a) => (
+            <button key={a.id} onClick={() => setAccent(a.color)} aria-label={a.id} style={{
+              width: 30, height: 30, borderRadius: "50%", background: a.color,
+              border: accent === a.color ? "2px solid #fff" : "2px solid transparent",
+              boxShadow: accent === a.color ? `0 0 0 2px ${a.color}` : "none", cursor: "pointer" }} />
+          ))}
+        </div>
+        <Field label="Название периода" value={draft.label} type="text" onChange={(v) => setDraft({ ...draft, label: v })} />
+        <Field label="Живые деньги, €" value={draft.livingBudget} onChange={(v) => setDraft({ ...draft, livingBudget: v })} />
+        <Field label="Всего дней" value={draft.totalDays} onChange={(v) => setDraft({ ...draft, totalDays: v })} />
+        <Field label="Старт (ГГГГ-ММ-ДД)" value={draft.startISO} type="text" onChange={(v) => setDraft({ ...draft, startISO: v })} />
+        <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
+          <button onClick={onClose} style={{ ...chip, flex: 1, padding: "12px" }}>Отмена</button>
+          <button disabled={saving} onClick={async () => { setSaving(true); await onSave(draft); }} style={{ ...primaryBtn, flex: 1, padding: "12px" }}>{saving ? "…" : "Сохранить"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function GoalPicker({ goals, contribs, onPick, onClose }) {
+  return (
+    <div style={overlay} onClick={onClose}>
+      <div style={modal} onClick={(e) => e.stopPropagation()}>
+        <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 12 }}>В какую копилку?</div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {goals.map((g) => (
+            <button key={g.id} onClick={() => onPick(g.id)} style={{ ...chip, padding: "13px", textAlign: "left", display: "flex", justifyContent: "space-between" }}>
+              <span>{g.name}</span>
+              <span style={{ fontFamily: mono, color: C.green }}>{eur(goalBalance(g, contribs))}</span>
+            </button>
+          ))}
+        </div>
+        <button onClick={onClose} style={{ ...chip, width: "100%", padding: "12px", marginTop: 12 }}>Отмена</button>
+      </div>
+    </div>
+  );
+}
+
+function CloseMonthModal({ m, goals, contribs, onClose, onConfirm }) {
+  const leftover = Math.max(0, m.remainingBudget);
+  const [move, setMove] = useState(leftover ? leftover.toFixed(2) : "");
+  const [goalId, setGoalId] = useState(goals[0]?.id || "");
+  const [label, setLabel] = useState("");
+  const [living, setLiving] = useState("");
+  const [days, setDays] = useState("30");
+  const [busy, setBusy] = useState(false);
+
+  const confirm = async () => {
+    setBusy(true);
+    await onConfirm({
+      moveAmount: parseNum(move) > 0 ? parseNum(move) : 0,
+      goalId: goalId || null,
+      label: label || "Новый период",
+      livingBudget: parseNum(living) || 0,
+      totalDays: parseInt(days) || 30,
+    });
+  };
+
+  return (
+    <div style={overlay} onClick={onClose}>
+      <div style={{ ...modal, maxHeight: "88vh", overflowY: "auto" }} onClick={(e) => e.stopPropagation()}>
+        <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>Закрыть период</div>
+        <div style={{ fontSize: 12, color: C.muted, marginBottom: 14 }}>Остаток можно отложить в копилку, затем задать новый месяц.</div>
+
+        <div style={{ ...panel, padding: 14, marginBottom: 14 }}>
+          <div style={{ fontSize: 12, color: C.muted }}>Остаток бюджета</div>
+          <div style={{ fontFamily: mono, fontWeight: 700, fontSize: 26, color: leftover > 0 ? C.green : C.muted, marginTop: 4 }}>{eur(leftover)}</div>
+        </div>
+
+        {goals.length > 0 && (
+          <>
+            <Field label="Отложить в копилку, €" value={move} onChange={setMove} />
+            <div style={{ fontSize: 12, color: C.muted, marginBottom: 5 }}>Копилка</div>
+            <select value={goalId} onChange={(e) => setGoalId(e.target.value)} style={{ ...inputStyle, marginBottom: 12 }}>
+              {goals.map((g) => (<option key={g.id} value={g.id}>{g.name} · {eur(goalBalance(g, contribs))}</option>))}
+            </select>
+          </>
+        )}
+
+        <div style={{ height: 1, background: C.border, margin: "6px 0 14px" }} />
+        <div style={{ ...label, marginBottom: 10 }}>Новый период</div>
+        <Field label="Название (Сентябрь…)" value={label} type="text" onChange={setLabel} />
+        <Field label="Живые деньги на период, €" value={living} onChange={setLiving} />
+        <Field label="Дней" value={days} onChange={setDays} />
+
+        <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+          <button onClick={onClose} style={{ ...chip, flex: 1, padding: "12px" }}>Отмена</button>
+          <button disabled={busy} onClick={confirm} style={{ ...primaryBtn, flex: 1, padding: "12px" }}>{busy ? "…" : "Закрыть и начать"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------- small ----------
 function MiniStat({ label, value, color }) {
   return (
     <div style={{ flex: 1, background: C.surface2, borderRadius: 12, padding: "10px 12px", border: `1px solid ${C.border}` }}>
@@ -632,10 +1010,14 @@ const wrap = { fontFamily: sans, background: C.bg, color: C.text, minHeight: "10
 const panel = { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 18, padding: 18 };
 const label = { fontSize: 12, letterSpacing: 1.5, color: C.muted, textTransform: "uppercase" };
 const iconBtn = { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, color: C.text, width: 42, height: 42, fontSize: 17 };
-const chip = { background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 10, color: C.text, fontWeight: 600, fontSize: 14, padding: "9px 14px", transition: "transform .08s" };
+const chip = { background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 10, color: C.text, fontWeight: 600, fontSize: 14, padding: "9px 14px" };
+const miniBtn = { background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 10, color: C.text, fontWeight: 600, fontSize: 13, padding: "9px 14px" };
 const rowItem = { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 0", borderTop: `1px solid ${C.border}` };
 const delBtn = { background: "transparent", border: "none", color: C.red, fontSize: 12 };
 const inputStyle = { width: "100%", background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 12, color: C.text, fontFamily: mono, padding: "12px 14px", fontSize: 16 };
 const primaryBtn = { background: "var(--accent, #3B82F6)", border: "none", borderRadius: 12, color: "#fff", fontWeight: 700, fontSize: 15 };
+const tabBar = { display: "flex", gap: 5, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 13, padding: 4 };
+const tabBtn = (active, small) => ({ flex: 1, padding: small ? "8px" : "10px", borderRadius: 10, fontWeight: 500,
+  fontSize: small ? 13 : 14, background: active ? "var(--accent, #3B82F6)" : "transparent", color: active ? "#fff" : C.muted, transition: "background .15s" });
 const overlay = { position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20, zIndex: 50 };
 const modal = { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 18, padding: 20, width: "100%", maxWidth: 380 };
