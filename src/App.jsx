@@ -171,6 +171,12 @@ function Tracker({ session, accent, setAccent }) {
     () => goals.reduce((s, g) => s + goalBalance(g, contribs), 0),
     [goals, contribs]
   );
+  // часть копилок, пополненная сторонними деньгами (через «Доходы» → «В копилку»).
+  // такие деньги пришли извне, поэтому НЕ уменьшают «на жизнь» текущего периода.
+  const externalSavings = useMemo(
+    () => contribs.filter((c) => c.source === "income").reduce((s, c) => s + c.amount, 0),
+    [contribs]
+  );
 
   // ---- math (envelope + доходы, отправленные в бюджет) ----
   const m = useMemo(() => {
@@ -181,11 +187,12 @@ function Tracker({ session, accent, setAccent }) {
     const daysRemaining = Math.max(1, period.totalDays - todayIndex);
     const completedDays = todayIndex;
 
-    // на жизнь считается живьём от остатка: доход − обязательные − копилка
-    // (для старого перенесённого периода income=0 → берём сохранённое живое)
-    const reservedSavings = period.income > 0 ? savingsTotal : period.reservedSavings;
+    // на жизнь считается живьём: доход − обязательные − копилка «из своих денег»
+    // (сторонние поступления в копилку сюда не входят; старый период income=0 → сохранённое живое)
+    const ownSavings = savingsTotal - externalSavings;
+    const reservedSavings = period.income > 0 ? ownSavings : period.reservedSavings;
     const baseLiving = period.income > 0
-      ? Math.max(0, period.income - sumObl(period.obligations) - savingsTotal)
+      ? Math.max(0, period.income - sumObl(period.obligations) - ownSavings)
       : period.livingBudget;
 
     const budgetIncome = incomes.filter((i) => i.status === "budget" && i.periodId === period.id)
@@ -215,7 +222,7 @@ function Tracker({ session, accent, setAccent }) {
     return { today, todayIndex, daysRemaining, spentToday, totalSpent, remainingBudget, budgetIncome,
       effectiveLiving, baseLiving, reservedSavings, baselineDaily, carryIn, todayAllowance, leftToday, carryTomorrow,
       projectedTotal, projectedLeftover, ratio, status, endISO };
-  }, [period, entries, incomes, savingsTotal]);
+  }, [period, entries, incomes, savingsTotal, externalSavings]);
 
 
   // ---- spend handlers ----
