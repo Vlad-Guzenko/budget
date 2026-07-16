@@ -31,9 +31,31 @@ const prettyDate = (iso) => { const d = dateFromISO(iso); return `${d.getDate()}
 const eur = (v) => (v < 0 ? "-" : "") + Math.abs(v).toFixed(2).replace(".", ",") + " €";
 const signEur = (v) => (v > 0 ? "+" : v < 0 ? "-" : "") + Math.abs(v).toFixed(2).replace(".", ",") + " €";
 
+const ACCENTS = [
+  { id: "blue", color: "#3B82F6" },
+  { id: "teal", color: "#28C0B8" },
+  { id: "green", color: "#2FBF87" },
+  { id: "purple", color: "#7C6CF0" },
+  { id: "pink", color: "#E85A9B" },
+  { id: "orange", color: "#F5893B" },
+  { id: "red", color: "#F0655F" },
+];
+
 // =====================================================================
 export default function App() {
   const [session, setSession] = useState(undefined);
+  const [accent, setAccentState] = useState(() => {
+    try { return localStorage.getItem("accent") || ACCENTS[0].color; }
+    catch { return ACCENTS[0].color; }
+  });
+  const setAccent = (c) => {
+    setAccentState(c);
+    try { localStorage.setItem("accent", c); } catch {}
+  };
+  useEffect(() => {
+    document.documentElement.style.setProperty("--accent", accent);
+  }, [accent]);
+
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session ?? null));
     const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s ?? null));
@@ -41,7 +63,7 @@ export default function App() {
   }, []);
   if (session === undefined) return <Splash />;
   if (session === null) return <Auth />;
-  return <Tracker session={session} />;
+  return <Tracker session={session} accent={accent} setAccent={setAccent} />;
 }
 
 function Splash() {
@@ -90,7 +112,7 @@ function Auth() {
         </button>
         {msg && <div style={{ color: C.amber, fontSize: 12, marginTop: 10 }}>{msg}</div>}
         <button onClick={() => { setMode(mode === "login" ? "signup" : "login"); setMsg(""); }}
-          style={{ color: C.blue, fontSize: 13, marginTop: 14, background: "none", width: "100%" }}>
+          style={{ color: "var(--accent, #3B82F6)", fontSize: 13, marginTop: 14, background: "none", width: "100%" }}>
           {mode === "login" ? "Нет аккаунта? Создать" : "Уже есть аккаунт? Войти"}
         </button>
       </div>
@@ -99,7 +121,7 @@ function Auth() {
 }
 
 // ---------------------------------------------------------------------
-function Tracker({ session }) {
+function Tracker({ session, accent, setAccent }) {
   const uid = session.user.id;
   const [loaded, setLoaded] = useState(false);
   const [config, setConfig] = useState(DEFAULT_CONFIG);
@@ -218,7 +240,7 @@ function Tracker({ session }) {
         <div>
           <div style={{ fontSize: 11, letterSpacing: 2, color: C.muted, textTransform: "uppercase" }}>Бюджет до зарплаты</div>
           <div style={{ fontSize: 13, marginTop: 3 }}>
-            до {prettyDate(m.endISO)} · осталось <b style={{ color: C.blue }}>{m.daysRemaining} дн.</b>
+            до {prettyDate(m.endISO)} · осталось <b style={{ color: "var(--accent, #3B82F6)" }}>{m.daysRemaining} дн.</b>
           </div>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
@@ -232,7 +254,7 @@ function Tracker({ session }) {
         {[["budget", "Бюджет"], ["chart", "График"], ["history", "История"]].map(([k, lbl]) => (
           <button key={k} onClick={() => setTab(k)} style={{
             flex: 1, padding: "10px", borderRadius: 10, fontWeight: 500, fontSize: 14,
-            background: tab === k ? C.blue : "transparent", color: tab === k ? "#fff" : C.muted,
+            background: tab === k ? "var(--accent, #3B82F6)" : "transparent", color: tab === k ? "#fff" : C.muted,
             transition: "background .15s",
           }}>{lbl}</button>
         ))}
@@ -351,6 +373,18 @@ function Tracker({ session }) {
           <div style={modal} onClick={(e) => e.stopPropagation()}>
             <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>Настройки</div>
             <div style={{ fontSize: 12, color: C.muted, marginBottom: 16 }}>После двух недель можно поднять бюджет здесь.</div>
+
+            <div style={{ fontSize: 12, color: C.muted, marginBottom: 8 }}>Акцентный цвет</div>
+            <div style={{ display: "flex", gap: 10, marginBottom: 18 }}>
+              {ACCENTS.map((a) => (
+                <button key={a.id} onClick={() => setAccent(a.color)} aria-label={a.id} style={{
+                  width: 30, height: 30, borderRadius: "50%", background: a.color,
+                  border: accent === a.color ? "2px solid #fff" : "2px solid transparent",
+                  boxShadow: accent === a.color ? `0 0 0 2px ${a.color}` : "none", cursor: "pointer",
+                }} />
+              ))}
+            </div>
+
             <Field label="Живые деньги, €" value={draft.livingBudget} onChange={(v) => setDraft({ ...draft, livingBudget: v })} />
             <Field label="Всего дней" value={draft.totalDays} onChange={(v) => setDraft({ ...draft, totalDays: v })} />
             <Field label="Старт (ГГГГ-ММ-ДД)" value={draft.startISO} type="text" onChange={(v) => setDraft({ ...draft, startISO: v })} />
@@ -410,7 +444,7 @@ function ChartView({ config, entries, m }) {
           <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: "auto", display: "block" }}>
             {/* target line */}
             <line x1={padL} y1={targetY} x2={W - padR} y2={targetY}
-              stroke={C.blue} strokeWidth="1" strokeDasharray="4 4" opacity="0.7" />
+              stroke={"var(--accent, #3B82F6)"} strokeWidth="1" strokeDasharray="4 4" opacity="0.7" />
             {data.map((d, k) => {
               const x = padL + k * (bw + gap);
               const y = yFor(d.spent);
@@ -470,7 +504,7 @@ function CumulativeChart({ data, target, today }) {
   return (
     <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: "auto", display: "block" }}>
       <line x1={padL} y1={yFor(0)} x2={W - padR} y2={yFor(0)} stroke={C.border} strokeWidth="1" />
-      <path d={idealPath} stroke={C.blue} strokeWidth="1.5" fill="none" strokeDasharray="4 4" opacity="0.7" />
+      <path d={idealPath} stroke={"var(--accent, #3B82F6)"} strokeWidth="1.5" fill="none" strokeDasharray="4 4" opacity="0.7" />
       <polyline points={actualPts} stroke={actualColor} strokeWidth="2" fill="none" strokeLinejoin="round" strokeLinecap="round" />
       {actual.map((p) => (
         <circle key={p.k} cx={xFor(p.k)} cy={yFor(p.v)} r={p.k === n - 1 ? 3 : 1.5} fill={actualColor} />
@@ -602,6 +636,6 @@ const chip = { background: C.surface2, border: `1px solid ${C.border}`, borderRa
 const rowItem = { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 0", borderTop: `1px solid ${C.border}` };
 const delBtn = { background: "transparent", border: "none", color: C.red, fontSize: 12 };
 const inputStyle = { width: "100%", background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 12, color: C.text, fontFamily: mono, padding: "12px 14px", fontSize: 16 };
-const primaryBtn = { background: C.blue, border: "none", borderRadius: 12, color: "#fff", fontWeight: 700, fontSize: 15 };
+const primaryBtn = { background: "var(--accent, #3B82F6)", border: "none", borderRadius: 12, color: "#fff", fontWeight: 700, fontSize: 15 };
 const overlay = { position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20, zIndex: 50 };
 const modal = { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 18, padding: 20, width: "100%", maxWidth: 380 };
