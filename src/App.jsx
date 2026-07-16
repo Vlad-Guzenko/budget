@@ -490,14 +490,19 @@ function BudgetOverview({ m, period, input, setInput, addSpend, entries, removeE
         </div>
       </div>
 
-      {m.budgetIncome > 0.005 && (
+      {m.budgetIncome > 0.005 && period.income <= 0.005 && (
         <div style={{ ...panel, marginTop: 12, display: "flex", alignItems: "center", gap: 9, padding: "12px 16px" }}>
           <span style={{ fontFamily: mono, fontWeight: 700, color: C.green }}>+{eur(m.budgetIncome)}</span>
           <span style={{ fontSize: 12.5, color: C.muted }}>поступлений добавлено в бюджет месяца</span>
         </div>
       )}
 
-      {period.income > 0.005 && <BreakdownCard period={period} living={m.baseLiving} reserved={m.reservedSavings} />}
+      {period.income > 0.005 && (
+        <BreakdownCard period={period} income={period.income} budgetIncome={m.budgetIncome}
+          obligations={period.obligations} ownSavings={m.reservedSavings}
+          extraSavings={Math.max(0, savingsTotal - m.reservedSavings)}
+          living={m.effectiveLiving} daily={m.baselineDaily} />
+      )}
 
       {/* record */}
       <div style={{ ...panel, marginTop: 12 }}>
@@ -1096,22 +1101,22 @@ function CloseMonthModal({ m, goals, contribs, onClose, onConfirm }) {
 }
 
 // ---------- breakdown of income allocation ----------
-function BreakdownCard({ period, living, reserved }) {
+function BreakdownCard({ period, income, budgetIncome, obligations, ownSavings, extraSavings, living, daily }) {
   const [open, setOpen] = useState(false);
-  const obl = period.obligations || [];
+  const obl = obligations || [];
   const oblSum = sumObl(obl);
-  const daily = living / period.totalDays;
-  const Row = ({ k, v, c, minus }) => (
+  const Row = ({ k, v, c, sign }) => (
     <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontSize: 13.5 }}>
       <span style={{ color: C.muted }}>{k}</span>
-      <span style={{ fontFamily: mono, color: c || C.text }}>{minus ? "−" : ""}{eur(v)}</span>
+      <span style={{ fontFamily: mono, color: c || C.text }}>{sign || ""}{eur(v)}</span>
     </div>
   );
   return (
     <div style={{ ...panel, marginTop: 12 }}>
       <div style={label}>Откуда взялся бюджет</div>
       <div style={{ marginTop: 8 }}>
-        <Row k="Пришло за период" v={period.income} c={C.text} />
+        <Row k="Пришло за период" v={income} c={C.text} />
+        {budgetIncome > 0.005 && <Row k="Поступления в бюджет" v={budgetIncome} c={C.green} sign="+" />}
         <button onClick={() => setOpen(!open)} style={{ width: "100%", background: "none", padding: 0 }}>
           <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontSize: 13.5 }}>
             <span style={{ color: C.muted }}>Обязательные {obl.length ? `(${obl.length}) ▾` : ""}</span>
@@ -1124,13 +1129,18 @@ function BreakdownCard({ period, living, reserved }) {
             <span style={{ fontFamily: mono, color: C.faint }}>{eur(parseNum(o.amount) || 0)}</span>
           </div>
         ))}
-        {reserved > 0.005 && <Row k="Отложено в копилку" v={reserved} c={C.green} minus />}
+        {ownSavings > 0.005 && <Row k="Отложено в копилку" v={ownSavings} c={C.green} sign="−" />}
         <div style={{ height: 1, background: C.border, margin: "8px 0" }} />
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
           <span style={{ fontSize: 13.5, fontWeight: 600 }}>На жизнь</span>
           <span style={{ fontFamily: mono, fontWeight: 700, fontSize: 18, color: "var(--accent, #3B82F6)" }}>{eur(living)}</span>
         </div>
         <div style={{ textAlign: "right", fontSize: 11.5, color: C.muted, marginTop: 2 }}>≈ {eur(daily)}/день на {period.totalDays} дн.</div>
+        {extraSavings > 0.005 && (
+          <div style={{ marginTop: 10, fontSize: 11.5, color: C.faint, lineHeight: 1.4, borderTop: `1px solid ${C.border}`, paddingTop: 8 }}>
+            В копилке есть ещё {eur(extraSavings)} сторонних денег (через «Доходы») — они не из этих {eur(income)} и на дневной лимит не влияют.
+          </div>
+        )}
       </div>
     </div>
   );
