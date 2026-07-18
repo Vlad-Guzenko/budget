@@ -239,8 +239,9 @@ function Tracker({ session, accent, setAccent }) {
   const [goals, setGoals] = useState([]);
   const [contribs, setContribs] = useState([]);
   const [input, setInput] = useState("");
-  const [tab, setTab] = useState("budget"); // budget | income | savings
-  const [sub, setSub] = useState("overview"); // overview | chart | history
+  const [nav, setNav] = useState("home"); // home | feed | savings | income
+  const [feedSub, setFeedSub] = useState("ops"); // ops | cal | chart
+  const [showAdd, setShowAdd] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
 
   // modals
@@ -614,7 +615,7 @@ function Tracker({ session, accent, setAccent }) {
   // when user taps "в копилку": choose goal if several
   const sendToSavings = (income) => {
     if (goals.length === 0) {
-      setTab("savings");
+      setNav("savings");
       return;
     }
     if (goals.length === 1) routeIncome(income, "savings", goals[0].id);
@@ -814,6 +815,8 @@ function Tracker({ session, accent, setAccent }) {
     .filter((i) => i.status === "pending")
     .reduce((s, i) => s + i.amount, 0);
 
+  const navTitle = { feed: "Лента", savings: "Копилка", income: "Доходы" }[nav];
+
   return (
     <div style={wrap}>
       {/* header */}
@@ -826,133 +829,67 @@ function Tracker({ session, accent, setAccent }) {
         }}
       >
         <div>
-          <div
-            style={{
-              fontSize: 11,
-              letterSpacing: 2,
-              color: C.muted,
-              textTransform: "uppercase",
-            }}
-          >
-            {period.label}
-          </div>
-          <div style={{ fontSize: 13, marginTop: 3 }}>
-            до {prettyDate(m.endISO)} · осталось{" "}
-            <b style={{ color: "var(--accent, #3B82F6)" }}>
-              {m.daysRemaining} дн.
-            </b>
-          </div>
-        </div>
-        <div style={{ display: "flex", gap: 8 }}>
-          <button
-            onClick={() => setShowSettings(true)}
-            style={iconBtn}
-            aria-label="Настройки"
-          >
-            <Icon name="gear" />
-          </button>
-          <button
-            onClick={() =>
-              setConfirm({
-                title: "Выйти из аккаунта?",
-                message:
-                  "Данные сохранены в облаке — при следующем входе всё будет на месте.",
-                confirmText: "Выйти",
-                onYes: () => supabase.auth.signOut(),
-              })
-            }
-            style={iconBtn}
-            aria-label="Выйти"
-          >
-            <Icon name="logout" />
-          </button>
-        </div>
-      </div>
-
-      {/* primary tabs */}
-      <div style={tabBar}>
-        {[
-          ["budget", "Бюджет"],
-          ["income", "Доходы"],
-          ["savings", "Копилка"],
-        ].map(([k, lbl]) => (
-          <button key={k} onClick={() => setTab(k)} style={tabBtn(tab === k)}>
-            {lbl}
-            {k === "income" && pendingTotal > 0.005 ? " •" : ""}
-          </button>
-        ))}
-      </div>
-
-      {tab === "budget" && (
-        <>
-          <div style={{ ...tabBar, marginBottom: 14 }}>
-            {[
-              ["overview", "Обзор"],
-              ["chart", "График"],
-              ["history", "История"],
-              ["all", "Всё"],
-            ].map(([k, lbl]) => (
-              <button
-                key={k}
-                onClick={() => setSub(k)}
-                style={tabBtn(sub === k, true)}
+          {nav === "home" ? (
+            <>
+              <div
+                style={{
+                  fontSize: 11,
+                  letterSpacing: 2,
+                  color: C.muted,
+                  textTransform: "uppercase",
+                }}
               >
-                {lbl}
-              </button>
-            ))}
-          </div>
+                {period.label}
+              </div>
+              <div style={{ fontSize: 13, marginTop: 3 }}>
+                до {prettyDate(m.endISO)} · осталось{" "}
+                <b style={{ color: "var(--accent, #3B82F6)" }}>
+                  {m.daysRemaining} дн.
+                </b>
+              </div>
+            </>
+          ) : (
+            <div style={{ fontSize: 19, fontWeight: 700 }}>{navTitle}</div>
+          )}
+        </div>
+        <button
+          onClick={() => setShowSettings(true)}
+          style={iconBtn}
+          aria-label="Настройки"
+        >
+          <Icon name="gear" />
+        </button>
+      </div>
 
-          {sub === "overview" && (
-            <BudgetOverview
-              m={m}
-              period={period}
-              input={input}
-              setInput={setInput}
-              addSpend={addSpend}
-              entries={entries}
-              removeEntry={removeEntry}
-              addExtra={addExtra}
-              removeExtra={removeExtra}
-              savingsTotal={savingsTotal}
-              onCloseMonth={() => setShowClose(true)}
-            />
-          )}
-          {sub === "chart" && (
-            <ChartView period={period} entries={entries} m={m} />
-          )}
-          {sub === "history" && (
-            <HistoryView
-              period={period}
-              entries={entries}
-              m={m}
-              onRemove={removeEntry}
-            />
-          )}
-          {sub === "all" && (
-            <AllView
-              period={period}
-              entries={entries}
-              incomes={incomes}
-              m={m}
-              savingsTotal={savingsTotal}
-            />
-          )}
-        </>
-      )}
-
-      {tab === "income" && (
-        <IncomeView
-          incomes={incomes}
-          goals={goals}
+      {nav === "home" && (
+        <BudgetOverview
           m={m}
-          addIncome={addIncome}
-          deleteIncome={deleteIncome}
-          routeIncome={routeIncome}
-          sendToSavings={sendToSavings}
+          period={period}
+          input={input}
+          setInput={setInput}
+          addSpend={addSpend}
+          entries={entries}
+          removeEntry={removeEntry}
+          addExtra={addExtra}
+          removeExtra={removeExtra}
+          hideRecord
+          savingsTotal={savingsTotal}
+          onCloseMonth={() => setShowClose(true)}
         />
       )}
-
-      {tab === "savings" && (
+      {nav === "feed" && (
+        <FeedScreen
+          feedSub={feedSub}
+          setFeedSub={setFeedSub}
+          period={period}
+          entries={entries}
+          incomes={incomes}
+          m={m}
+          savingsTotal={savingsTotal}
+          onRemove={removeEntry}
+        />
+      )}
+      {nav === "savings" && (
         <SavingsView
           goals={goals}
           contribs={contribs}
@@ -964,7 +901,86 @@ function Tracker({ session, accent, setAccent }) {
           setConfirm={setConfirm}
         />
       )}
+      {nav === "income" && (
+        <IncomeView
+          incomes={incomes}
+          goals={goals}
+          m={m}
+          addIncome={addIncome}
+          deleteIncome={deleteIncome}
+          routeIncome={routeIncome}
+          sendToSavings={sendToSavings}
+        />
+      )}
 
+      {/* bottom nav */}
+      <div style={navBar}>
+        {[
+          ["home", "Дом", "home"],
+          ["feed", "Лента", "list"],
+        ].map(([k, lbl, ic]) => (
+          <button
+            key={k}
+            onClick={() => {
+              setNav(k);
+            }}
+            style={navItem(nav === k)}
+          >
+            <Icon
+              name={ic}
+              size={21}
+              color={nav === k ? "var(--accent, #3B82F6)" : C.faint}
+            />
+            {lbl}
+          </button>
+        ))}
+        <div style={{ width: 58, flexShrink: 0 }} />
+        {[
+          ["savings", "Копилка", "target"],
+          ["income", "Доходы", "income"],
+        ].map(([k, lbl, ic]) => (
+          <button
+            key={k}
+            onClick={() => {
+              setNav(k);
+            }}
+            style={navItem(nav === k)}
+          >
+            <span style={{ position: "relative" }}>
+              <Icon
+                name={ic}
+                size={21}
+                color={nav === k ? "var(--accent, #3B82F6)" : C.faint}
+              />
+              {k === "income" && pendingTotal > 0.005 && (
+                <span
+                  style={{
+                    position: "absolute",
+                    top: -2,
+                    right: -4,
+                    width: 7,
+                    height: 7,
+                    borderRadius: "50%",
+                    background: C.amber,
+                  }}
+                />
+              )}
+            </span>
+            {lbl}
+          </button>
+        ))}
+      </div>
+      <button
+        style={fabStyle}
+        onClick={() => setShowAdd(true)}
+        aria-label="Записать трату"
+      >
+        <Icon name="plus" size={26} color="#fff" />
+      </button>
+
+      {showAdd && (
+        <AddSheet onAdd={addSpend} onClose={() => setShowAdd(false)} />
+      )}
       {showSettings && (
         <SettingsModal
           period={period}
@@ -974,6 +990,15 @@ function Tracker({ session, accent, setAccent }) {
           uid={uid}
           setConfirm={setConfirm}
           onReopen={reopenPeriod}
+          onLogout={() =>
+            setConfirm({
+              title: "Выйти из аккаунта?",
+              message:
+                "Данные сохранены в облаке — при следующем входе всё будет на месте.",
+              confirmText: "Выйти",
+              onYes: () => supabase.auth.signOut(),
+            })
+          }
           onClose={() => setShowSettings(false)}
           onSave={saveSettings}
         />
@@ -1016,6 +1041,7 @@ function BudgetOverview({
   removeEntry,
   addExtra,
   removeExtra,
+  hideRecord,
   savingsTotal,
   onCloseMonth,
 }) {
@@ -1209,41 +1235,43 @@ function BudgetOverview({
       </div>
 
       {/* record */}
-      <div style={{ ...panel, marginTop: 12 }}>
-        <div style={{ ...label, marginBottom: 10 }}>Записать трату</div>
-        <div style={{ display: "flex", gap: 8 }}>
-          <input
-            type="number"
-            inputMode="decimal"
-            placeholder="0,00"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && addSpend(input)}
-            style={{
-              ...inputStyle,
-              flex: 1,
-              fontSize: 20,
-              fontWeight: 600,
-              fontFamily: mono,
-            }}
-          />
-          <button
-            onClick={() => addSpend(input)}
-            style={{ ...primaryBtn, padding: "0 20px" }}
-          >
-            + Добавить
-          </button>
-        </div>
-        <div
-          style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}
-        >
-          {[3, 5, 10, 15].map((v) => (
-            <button key={v} onClick={() => addSpend(v)} style={chip}>
-              +{v} €
+      {!hideRecord && (
+        <div style={{ ...panel, marginTop: 12 }}>
+          <div style={{ ...label, marginBottom: 10 }}>Записать трату</div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <input
+              type="number"
+              inputMode="decimal"
+              placeholder="0,00"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && addSpend(input)}
+              style={{
+                ...inputStyle,
+                flex: 1,
+                fontSize: 20,
+                fontWeight: 600,
+                fontFamily: mono,
+              }}
+            />
+            <button
+              onClick={() => addSpend(input)}
+              style={{ ...primaryBtn, padding: "0 20px" }}
+            >
+              + Добавить
             </button>
-          ))}
+          </div>
+          <div
+            style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}
+          >
+            {[3, 5, 10, 15].map((v) => (
+              <button key={v} onClick={() => addSpend(v)} style={chip}>
+                +{v} €
+              </button>
+            ))}
+          </div>
         </div>
-      </div>
+      )}
 
       {todayEntries.length > 0 && (
         <div style={{ ...panel, marginTop: 12 }}>
@@ -2374,6 +2402,7 @@ function SettingsModal({
   uid,
   setConfirm,
   onReopen,
+  onLogout,
   onClose,
   onSave,
 }) {
@@ -2581,6 +2610,27 @@ function SettingsModal({
             {saving ? "…" : "Сохранить"}
           </button>
         </div>
+        <button
+          onClick={() => {
+            onClose();
+            onLogout();
+          }}
+          style={{
+            background: "none",
+            border: "none",
+            color: C.muted,
+            fontSize: 13,
+            width: "100%",
+            marginTop: 14,
+            padding: 6,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 6,
+          }}
+        >
+          <Icon name="logout" size={15} color={C.muted} /> Выйти из аккаунта
+        </button>
       </div>
     </div>
   );
@@ -3456,6 +3506,357 @@ function BalanceCard({
   );
 }
 
+// ---------- FEED screen (лента + баланс + календарь + график) ----------
+function FeedScreen({
+  feedSub,
+  setFeedSub,
+  period,
+  entries,
+  incomes,
+  m,
+  savingsTotal,
+  onRemove,
+}) {
+  const obligations = period.obligations || [];
+  const extras = period.extras || [];
+  const pending = incomes
+    .filter((i) => i.status === "pending")
+    .reduce((s, i) => s + i.amount, 0);
+  const reservedObl = sumObl(obligations.filter((o) => !o.paid));
+  const total = savingsTotal + reservedObl + m.remainingBudget + pending;
+
+  const feed = [
+    ...entries.map((e) => ({
+      kind: "spend",
+      date: e.date,
+      amount: -e.amount,
+      title: "Трата",
+    })),
+    ...extras.map((e) => ({
+      kind: "extra",
+      date: e.date,
+      amount: -(parseNum(e.amount) || 0),
+      title: e.name || "Разовый расход",
+    })),
+    ...incomes.map((i) => ({
+      kind: "income",
+      date: i.date,
+      amount: i.amount,
+      title: i.source || "Поступление",
+      status: i.status,
+    })),
+  ].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+  const tagFor = (f) =>
+    f.kind === "extra"
+      ? "разовый"
+      : f.kind === "income"
+        ? f.status === "budget"
+          ? "в бюджет"
+          : f.status === "savings"
+            ? "в копилку"
+            : "не распределено"
+        : null;
+
+  return (
+    <>
+      <BalanceCard
+        total={total}
+        savings={savingsTotal}
+        obligations={reservedObl}
+        living={m.remainingBudget}
+        pending={pending}
+        hasIncome={period.income > 0}
+      />
+
+      <div style={{ ...tabBar, marginTop: 12, marginBottom: 14 }}>
+        {[
+          ["ops", "Операции"],
+          ["cal", "Календарь"],
+          ["chart", "График"],
+        ].map(([k, lbl]) => (
+          <button
+            key={k}
+            onClick={() => setFeedSub(k)}
+            style={tabBtn(feedSub === k, true)}
+          >
+            {lbl}
+          </button>
+        ))}
+      </div>
+
+      {feedSub === "ops" && (
+        <div style={panel}>
+          <div style={label}>Все операции</div>
+          {feed.length === 0 ? (
+            <div
+              style={{
+                color: C.muted,
+                fontSize: 14,
+                padding: "22px 0",
+                textAlign: "center",
+                lineHeight: 1.5,
+              }}
+            >
+              Здесь соберутся все движения —<br />
+              траты, доходы и разовые расходы.
+            </div>
+          ) : (
+            feed.map((f, idx) => (
+              <div
+                key={idx}
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  padding: "10px 0",
+                  borderTop: `1px solid ${C.border}`,
+                }}
+              >
+                <div>
+                  <div style={{ fontSize: 14 }}>{f.title}</div>
+                  <div style={{ fontSize: 11, color: C.faint }}>
+                    {prettyDate(f.date)}
+                    {tagFor(f) ? ` · ${tagFor(f)}` : ""}
+                  </div>
+                </div>
+                <span
+                  style={{
+                    fontFamily: mono,
+                    fontSize: 15,
+                    color: f.amount >= 0 ? C.green : C.text,
+                  }}
+                >
+                  {signEur(f.amount)}
+                </span>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+      {feedSub === "cal" && (
+        <CalendarView period={period} entries={entries} m={m} />
+      )}
+      {feedSub === "chart" && (
+        <ChartView period={period} entries={entries} m={m} />
+      )}
+    </>
+  );
+}
+
+// ---------- CALENDAR heatmap ----------
+function CalendarView({ period, entries, m }) {
+  const [sel, setSel] = useState(m.today);
+  const base = m.baselineDaily;
+  const now = dateFromISO(m.today);
+  const year = now.getFullYear(),
+    month = now.getMonth();
+  const startWeekday = (new Date(year, month, 1).getDay() + 6) % 7;
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const dayData = (iso) =>
+    entries.filter((e) => e.date === iso).reduce((s, e) => s + e.amount, 0);
+  const colorFor = (iso, spent) => {
+    if (iso > m.today) return null;
+    const r = base > 0 ? spent / base : 0;
+    return r > 1 ? C.red : r > 0.75 ? C.amber : C.green;
+  };
+  const cells = [];
+  for (let i = 0; i < startWeekday; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++)
+    cells.push(`${year}-${pad(month + 1)}-${pad(d)}`);
+  const selSpent = dayData(sel);
+  const selCol = colorFor(sel, selSpent);
+
+  return (
+    <div style={panel}>
+      <div style={label}>{RU_MONTHS[month]} · расходы по дням</div>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(7,1fr)",
+          gap: 5,
+          marginTop: 12,
+        }}
+      >
+        {["пн", "вт", "ср", "чт", "пт", "сб", "вс"].map((w) => (
+          <div
+            key={w}
+            style={{ fontSize: 9, color: C.faint, textAlign: "center" }}
+          >
+            {w}
+          </div>
+        ))}
+        {cells.map((iso, i) => {
+          if (!iso) return <div key={i} />;
+          const spent = dayData(iso);
+          const col = colorFor(iso, spent);
+          const dnum = Number(iso.slice(-2));
+          const isToday = iso === m.today;
+          const isSel = iso === sel;
+          return (
+            <button
+              key={i}
+              onClick={() => setSel(iso)}
+              style={{
+                aspectRatio: "1",
+                borderRadius: 8,
+                fontFamily: mono,
+                fontSize: 11,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                background: col ? col + "2e" : C.surface2,
+                border: isSel
+                  ? "2px solid #fff"
+                  : isToday
+                    ? `1px solid ${C.muted}`
+                    : `1px solid ${col ? col + "55" : C.border}`,
+                color: col || C.faint,
+              }}
+            >
+              {dnum}
+            </button>
+          );
+        })}
+      </div>
+      <div
+        style={{
+          display: "flex",
+          gap: 12,
+          justifyContent: "center",
+          marginTop: 12,
+          fontSize: 10,
+          color: C.muted,
+        }}
+      >
+        <span>
+          <span
+            style={{
+              display: "inline-block",
+              width: 8,
+              height: 8,
+              borderRadius: 2,
+              background: C.green,
+              marginRight: 4,
+            }}
+          />
+          норма
+        </span>
+        <span>
+          <span
+            style={{
+              display: "inline-block",
+              width: 8,
+              height: 8,
+              borderRadius: 2,
+              background: C.amber,
+              marginRight: 4,
+            }}
+          />
+          впритык
+        </span>
+        <span>
+          <span
+            style={{
+              display: "inline-block",
+              width: 8,
+              height: 8,
+              borderRadius: 2,
+              background: C.red,
+              marginRight: 4,
+            }}
+          />
+          перебор
+        </span>
+      </div>
+      <div
+        style={{
+          marginTop: 14,
+          borderTop: `1px solid ${C.border}`,
+          paddingTop: 12,
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "baseline",
+        }}
+      >
+        <div style={{ fontSize: 14, fontWeight: 600 }}>
+          {prettyDate(sel)}
+          {sel === m.today ? " · сегодня" : ""}
+        </div>
+        <div
+          style={{ fontFamily: mono, fontSize: 16, color: selCol || C.muted }}
+        >
+          {sel > m.today ? "—" : eur(selSpent)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------- ADD spend sheet (FAB) ----------
+function AddSheet({ onAdd, onClose }) {
+  const [amount, setAmount] = useState("");
+  const submit = () => {
+    const n = parseNum(amount);
+    if (isFinite(n) && n > 0) {
+      onAdd(n);
+      onClose();
+    }
+  };
+  return (
+    <div
+      style={{ ...overlay, alignItems: "flex-end", padding: 0 }}
+      onClick={onClose}
+    >
+      <div style={sheet} onClick={(e) => e.stopPropagation()}>
+        <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 14 }}>
+          Записать трату
+        </div>
+        <input
+          type="number"
+          inputMode="decimal"
+          placeholder="0,00"
+          autoFocus
+          value={amount}
+          onChange={(e) => setAmount(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && submit()}
+          style={{
+            ...inputStyle,
+            fontSize: 24,
+            fontWeight: 700,
+            fontFamily: mono,
+            textAlign: "center",
+          }}
+        />
+        <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+          {[3, 5, 10, 15].map((v) => (
+            <button
+              key={v}
+              onClick={() => setAmount(String((parseNum(amount) || 0) + v))}
+              style={{ ...chip, flex: 1, textAlign: "center" }}
+            >
+              +{v}
+            </button>
+          ))}
+        </div>
+        <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+          <button
+            onClick={onClose}
+            style={{ ...chip, flex: 1, padding: "14px" }}
+          >
+            Отмена
+          </button>
+          <button
+            onClick={submit}
+            style={{ ...primaryBtn, flex: 2, padding: "14px" }}
+          >
+            + Добавить
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ---------- icons ----------
 function Icon({ name, size = 18, color = "currentColor", style }) {
   const paths = {
@@ -3495,6 +3896,34 @@ function Icon({ name, size = 18, color = "currentColor", style }) {
       <>
         <polyline points="3 6 5 6 21 6" />
         <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+      </>
+    ),
+    home: (
+      <>
+        <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+        <polyline points="9 22 9 12 15 12 15 22" />
+      </>
+    ),
+    list: (
+      <>
+        <line x1="8" y1="6" x2="21" y2="6" />
+        <line x1="8" y1="12" x2="21" y2="12" />
+        <line x1="8" y1="18" x2="21" y2="18" />
+        <line x1="3" y1="6" x2="3.01" y2="6" />
+        <line x1="3" y1="12" x2="3.01" y2="12" />
+        <line x1="3" y1="18" x2="3.01" y2="18" />
+      </>
+    ),
+    target: (
+      <>
+        <circle cx="12" cy="12" r="9" />
+        <circle cx="12" cy="12" r="4" />
+      </>
+    ),
+    income: (
+      <>
+        <line x1="12" y1="19" x2="12" y2="5" />
+        <polyline points="5 12 12 5 19 12" />
       </>
     ),
   };
@@ -3625,7 +4054,7 @@ const wrap = {
   maxWidth: 460,
   margin: "0 auto",
   padding:
-    "calc(20px + env(safe-area-inset-top)) 16px calc(32px + env(safe-area-inset-bottom))",
+    "calc(20px + env(safe-area-inset-top)) 16px calc(96px + env(safe-area-inset-bottom))",
   display: "flex",
   flexDirection: "column",
 };
@@ -3736,4 +4165,65 @@ const modal = {
   padding: 20,
   width: "100%",
   maxWidth: 380,
+};
+const navBar = {
+  position: "fixed",
+  bottom: 0,
+  left: "50%",
+  transform: "translateX(-50%)",
+  width: "100%",
+  maxWidth: 460,
+  height: "calc(62px + env(safe-area-inset-bottom))",
+  paddingBottom: "env(safe-area-inset-bottom)",
+  background: "rgba(17,20,26,.94)",
+  backdropFilter: "blur(14px)",
+  WebkitBackdropFilter: "blur(14px)",
+  borderTop: `1px solid ${C.border}`,
+  display: "flex",
+  alignItems: "center",
+  zIndex: 40,
+};
+const navItem = (active) => ({
+  flex: 1,
+  background: "none",
+  border: "none",
+  cursor: "pointer",
+  color: active ? "var(--accent, #3B82F6)" : C.faint,
+  display: "flex",
+  flexDirection: "column",
+  alignItems: "center",
+  gap: 3,
+  fontSize: 10,
+  fontWeight: 500,
+  padding: "6px 0",
+  height: 62,
+  justifyContent: "center",
+});
+const fabStyle = {
+  position: "fixed",
+  bottom: "calc(26px + env(safe-area-inset-bottom))",
+  left: "50%",
+  transform: "translateX(-50%)",
+  width: 56,
+  height: 56,
+  borderRadius: "50%",
+  background: "var(--accent, #3B82F6)",
+  border: "3px solid " + C.bg,
+  color: "#fff",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  boxShadow: "0 8px 20px rgba(59,130,246,.4)",
+  zIndex: 41,
+  cursor: "pointer",
+};
+const sheet = {
+  width: "100%",
+  maxWidth: 460,
+  background: C.surface,
+  borderTopLeftRadius: 22,
+  borderTopRightRadius: 22,
+  borderTop: `1px solid ${C.border}`,
+  padding: "20px 18px calc(26px + env(safe-area-inset-bottom))",
+  margin: "0 auto",
 };
