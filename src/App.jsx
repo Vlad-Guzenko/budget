@@ -869,6 +869,7 @@ function Tracker({ session, accent, setAccent }) {
               ["overview", "Обзор"],
               ["chart", "График"],
               ["history", "История"],
+              ["all", "Всё"],
             ].map(([k, lbl]) => (
               <button
                 key={k}
@@ -904,6 +905,15 @@ function Tracker({ session, accent, setAccent }) {
               entries={entries}
               m={m}
               onRemove={removeEntry}
+            />
+          )}
+          {sub === "all" && (
+            <AllView
+              period={period}
+              entries={entries}
+              incomes={incomes}
+              m={m}
+              savingsTotal={savingsTotal}
             />
           )}
         </>
@@ -3075,6 +3085,214 @@ function ObligationList({ items, onChange }) {
       >
         + строка
       </button>
+    </div>
+  );
+}
+
+// ---------- ALL · balance + operations feed ----------
+function AllView({ period, entries, incomes, m, savingsTotal }) {
+  const obligations = period.obligations || [];
+  const extras = period.extras || [];
+  const pending = incomes
+    .filter((i) => i.status === "pending")
+    .reduce((s, i) => s + i.amount, 0);
+  const total =
+    savingsTotal + sumObl(obligations) + m.remainingBudget + pending;
+
+  const feed = [
+    ...entries.map((e) => ({
+      kind: "spend",
+      date: e.date,
+      amount: -e.amount,
+      title: "Трата",
+    })),
+    ...extras.map((e) => ({
+      kind: "extra",
+      date: e.date,
+      amount: -(parseNum(e.amount) || 0),
+      title: e.name || "Разовый расход",
+    })),
+    ...incomes.map((i) => ({
+      kind: "income",
+      date: i.date,
+      amount: i.amount,
+      title: i.source || "Поступление",
+      status: i.status,
+    })),
+  ].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+
+  const tagFor = (f) =>
+    f.kind === "extra"
+      ? "разовый"
+      : f.kind === "income"
+        ? f.status === "budget"
+          ? "в бюджет"
+          : f.status === "savings"
+            ? "в копилку"
+            : "не распределено"
+        : null;
+
+  return (
+    <>
+      <BalanceCard
+        total={total}
+        savings={savingsTotal}
+        obligations={sumObl(obligations)}
+        living={m.remainingBudget}
+        pending={pending}
+        hasIncome={period.income > 0}
+      />
+
+      <div style={{ ...panel, marginTop: 12 }}>
+        <div style={label}>Все операции</div>
+        {feed.length === 0 ? (
+          <div
+            style={{
+              color: C.muted,
+              fontSize: 14,
+              padding: "22px 0",
+              textAlign: "center",
+            }}
+          >
+            Операций пока нет.
+          </div>
+        ) : (
+          feed.map((f, idx) => (
+            <div
+              key={idx}
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                padding: "10px 0",
+                borderTop: `1px solid ${C.border}`,
+              }}
+            >
+              <div>
+                <div style={{ fontSize: 14 }}>{f.title}</div>
+                <div style={{ fontSize: 11, color: C.faint }}>
+                  {prettyDate(f.date)}
+                  {tagFor(f) ? ` · ${tagFor(f)}` : ""}
+                </div>
+              </div>
+              <span
+                style={{
+                  fontFamily: mono,
+                  fontSize: 15,
+                  color: f.amount >= 0 ? C.green : C.text,
+                }}
+              >
+                {signEur(f.amount)}
+              </span>
+            </div>
+          ))
+        )}
+      </div>
+    </>
+  );
+}
+
+function BalanceCard({
+  total,
+  savings,
+  obligations,
+  living,
+  pending,
+  hasIncome,
+}) {
+  const [bank, setBank] = useState("");
+  const b = parseNum(bank);
+  const diff = isFinite(b) ? b - total : null;
+  const Row = ({ k, v, c }) => (
+    <div
+      style={{
+        display: "flex",
+        justifyContent: "space-between",
+        padding: "5px 0",
+        fontSize: 13.5,
+      }}
+    >
+      <span style={{ color: C.muted }}>{k}</span>
+      <span style={{ fontFamily: mono, color: c || C.text }}>{eur(v)}</span>
+    </div>
+  );
+  return (
+    <div style={panel}>
+      <div style={label}>Текущий баланс</div>
+      <div
+        style={{
+          fontFamily: mono,
+          fontWeight: 700,
+          fontSize: 34,
+          marginTop: 8,
+          letterSpacing: -0.5,
+        }}
+      >
+        {eur(total)}
+      </div>
+      <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>
+        столько должно быть на счету
+      </div>
+
+      {!hasIncome && (
+        <div style={{ fontSize: 12, color: C.amber, marginTop: 10 }}>
+          Заполни «Пришло за период» в настройках, чтобы баланс считался точно.
+        </div>
+      )}
+
+      <div
+        style={{
+          marginTop: 12,
+          borderTop: `1px solid ${C.border}`,
+          paddingTop: 8,
+        }}
+      >
+        <Row k="В копилках" v={savings} c={C.green} />
+        <Row k="Под обязательные" v={obligations} />
+        <Row k="Остаток на жизнь" v={living} c={living < 0 ? C.red : C.text} />
+        {pending > 0.005 && <Row k="Не распределено" v={pending} c={C.amber} />}
+      </div>
+
+      <div
+        style={{
+          marginTop: 14,
+          borderTop: `1px solid ${C.border}`,
+          paddingTop: 12,
+        }}
+      >
+        <div style={{ fontSize: 12, color: C.muted, marginBottom: 6 }}>
+          Сверить с банком
+        </div>
+        <input
+          type="number"
+          inputMode="decimal"
+          placeholder="Баланс в банке, €"
+          value={bank}
+          onChange={(e) => setBank(e.target.value)}
+          style={inputStyle}
+        />
+        {diff !== null &&
+          (Math.abs(diff) < 0.01 ? (
+            <div style={{ fontSize: 13, color: C.green, marginTop: 8 }}>
+              ✓ Сходится с банком
+            </div>
+          ) : (
+            <div
+              style={{
+                fontSize: 12.5,
+                color: C.amber,
+                marginTop: 8,
+                lineHeight: 1.4,
+              }}
+            >
+              Расхождение: <b style={{ fontFamily: mono }}>{signEur(diff)}</b>
+              <br />
+              {diff < 0
+                ? "в банке меньше — вероятно, есть незаписанная трата или уже оплаченное обязательное."
+                : "в банке больше — возможно, пришли деньги, не занесённые в «Доходы»."}
+            </div>
+          ))}
+      </div>
     </div>
   );
 }
