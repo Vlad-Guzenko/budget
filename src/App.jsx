@@ -246,6 +246,7 @@ function Tracker({ session, accent, setAccent }) {
   // modals
   const [routeFor, setRouteFor] = useState(null); // income needing goal choice
   const [showClose, setShowClose] = useState(false);
+  const [confirm, setConfirm] = useState(null); // { title, message, confirmText, danger, onYes }
 
   // ---- load ----
   const load = useCallback(async () => {
@@ -752,6 +753,17 @@ function Tracker({ session, accent, setAccent }) {
     await load();
   };
 
+  const reopenPeriod = async (pid) => {
+    await supabase
+      .from("periods")
+      .update({ status: "closed" })
+      .eq("id", period.id);
+    await supabase.from("periods").update({ status: "active" }).eq("id", pid);
+    setShowSettings(false);
+    setLoaded(false);
+    await load();
+  };
+
   const saveSettings = async (draft) => {
     // draft: { label, income, obligations, totalDays, startISO }
     const inc = parseNum(draft.income) || 0;
@@ -760,6 +772,7 @@ function Tracker({ session, accent, setAccent }) {
       .map((o) => ({
         name: o.name || "Расход",
         amount: parseNum(o.amount) || 0,
+        paid: !!o.paid,
       }));
     // для текущего периода "отложено" = то, что уже лежит в копилках (не трогаем, не дублируем)
     const reserved =
@@ -836,14 +849,22 @@ function Tracker({ session, accent, setAccent }) {
             style={iconBtn}
             aria-label="Настройки"
           >
-            ⚙︎
+            <Icon name="gear" />
           </button>
           <button
-            onClick={() => supabase.auth.signOut()}
+            onClick={() =>
+              setConfirm({
+                title: "Выйти из аккаунта?",
+                message:
+                  "Данные сохранены в облаке — при следующем входе всё будет на месте.",
+                confirmText: "Выйти",
+                onYes: () => supabase.auth.signOut(),
+              })
+            }
             style={iconBtn}
             aria-label="Выйти"
           >
-            ⏻
+            <Icon name="logout" />
           </button>
         </div>
       </div>
@@ -940,6 +961,7 @@ function Tracker({ session, accent, setAccent }) {
           archiveGoal={archiveGoal}
           contribute={contribute}
           removeContribution={removeContribution}
+          setConfirm={setConfirm}
         />
       )}
 
@@ -949,6 +971,9 @@ function Tracker({ session, accent, setAccent }) {
           accent={accent}
           setAccent={setAccent}
           savingsTotal={savingsTotal}
+          uid={uid}
+          setConfirm={setConfirm}
+          onReopen={reopenPeriod}
           onClose={() => setShowSettings(false)}
           onSave={saveSettings}
         />
@@ -972,6 +997,9 @@ function Tracker({ session, accent, setAccent }) {
           onClose={() => setShowClose(false)}
           onConfirm={closeMonth}
         />
+      )}
+      {confirm && (
+        <ConfirmModal {...confirm} onClose={() => setConfirm(null)} />
       )}
     </div>
   );
@@ -1069,7 +1097,7 @@ function BudgetOverview({
                   ? "почти лимит"
                   : "в норме"}
             </div>
-            <div style={{ fontSize: 11, color: C.faint, marginTop: 2 }}>
+            <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>
               из {eur(m.todayAllowance)}
             </div>
           </div>
@@ -1180,6 +1208,61 @@ function BudgetOverview({
         </div>
       </div>
 
+      {/* record */}
+      <div style={{ ...panel, marginTop: 12 }}>
+        <div style={{ ...label, marginBottom: 10 }}>Записать трату</div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <input
+            type="number"
+            inputMode="decimal"
+            placeholder="0,00"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && addSpend(input)}
+            style={{
+              ...inputStyle,
+              flex: 1,
+              fontSize: 20,
+              fontWeight: 600,
+              fontFamily: mono,
+            }}
+          />
+          <button
+            onClick={() => addSpend(input)}
+            style={{ ...primaryBtn, padding: "0 20px" }}
+          >
+            + Добавить
+          </button>
+        </div>
+        <div
+          style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}
+        >
+          {[3, 5, 10, 15].map((v) => (
+            <button key={v} onClick={() => addSpend(v)} style={chip}>
+              +{v} €
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {todayEntries.length > 0 && (
+        <div style={{ ...panel, marginTop: 12 }}>
+          <div style={{ ...label, marginBottom: 10 }}>
+            Сегодня · {eur(m.spentToday)}
+          </div>
+          {todayEntries.map((e) => (
+            <div key={e.id} style={rowItem}>
+              <span style={{ fontFamily: mono, fontSize: 16 }}>
+                {eur(e.amount)}
+              </span>
+              <button onClick={() => removeEntry(e.id)} style={delBtn}>
+                удалить
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
       {m.budgetIncome > 0.005 && period.income <= 0.005 && (
         <div
           style={{
@@ -1222,55 +1305,6 @@ function BudgetOverview({
         />
       )}
 
-      {/* record */}
-      <div style={{ ...panel, marginTop: 12 }}>
-        <div style={{ ...label, marginBottom: 10 }}>Записать трату</div>
-        <div style={{ display: "flex", gap: 8 }}>
-          <input
-            type="number"
-            inputMode="decimal"
-            placeholder="0,00"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && addSpend(input)}
-            style={{ ...inputStyle, flex: 1, fontSize: 20, fontWeight: 600 }}
-          />
-          <button
-            onClick={() => addSpend(input)}
-            style={{ ...primaryBtn, padding: "0 20px" }}
-          >
-            + Добавить
-          </button>
-        </div>
-        <div
-          style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}
-        >
-          {[3, 5, 10, 15].map((v) => (
-            <button key={v} onClick={() => addSpend(v)} style={chip}>
-              +{v} €
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {todayEntries.length > 0 && (
-        <div style={{ ...panel, marginTop: 12 }}>
-          <div style={{ ...label, marginBottom: 10 }}>
-            Сегодня · {eur(m.spentToday)}
-          </div>
-          {todayEntries.map((e) => (
-            <div key={e.id} style={rowItem}>
-              <span style={{ fontFamily: mono, fontSize: 16 }}>
-                {eur(e.amount)}
-              </span>
-              <button onClick={() => removeEntry(e.id)} style={delBtn}>
-                удалить
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-
       {/* forecast */}
       <div style={{ ...panel, marginTop: 12 }}>
         <div style={label}>Прогноз остатка к концу периода</div>
@@ -1282,7 +1316,7 @@ function BudgetOverview({
             fontFamily: mono,
             fontWeight: 700,
             fontSize: 34,
-            color: m.projectedLeftover < 0 ? C.red : C.green,
+            color: m.projectedLeftover < 0 ? C.red : "var(--accent, #3B82F6)",
             marginTop: 8,
             letterSpacing: -0.5,
           }}
@@ -1548,6 +1582,7 @@ function SavingsView({
   archiveGoal,
   contribute,
   removeContribution,
+  setConfirm,
 }) {
   const [creating, setCreating] = useState(false);
   const [nm, setNm] = useState("");
@@ -1664,6 +1699,7 @@ function SavingsView({
             onRemoveContribution={removeContribution}
             onEdit={editGoal}
             onArchive={archiveGoal}
+            setConfirm={setConfirm}
           />
         ))}
       </div>
@@ -1678,6 +1714,7 @@ function GoalCard({
   onRemoveContribution,
   onEdit,
   onArchive,
+  setConfirm,
 }) {
   const [open, setOpen] = useState(false);
   const [amt, setAmt] = useState("");
@@ -1738,9 +1775,15 @@ function GoalCard({
         <div style={{ fontSize: 16, fontWeight: 700 }}>{goal.name}</div>
         <button
           onClick={() => setMode(mode === "edit" ? null : "edit")}
-          style={{ ...miniBtn, padding: "5px 10px" }}
+          style={{
+            ...miniBtn,
+            padding: "7px 10px",
+            display: "flex",
+            alignItems: "center",
+          }}
+          aria-label="Изменить"
         >
-          ✎
+          <Icon name="edit" size={15} color={C.muted} />
         </button>
       </div>
 
@@ -1769,7 +1812,16 @@ function GoalCard({
           />
           <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
             <button
-              onClick={() => onArchive(goal)}
+              onClick={() =>
+                setConfirm({
+                  title: `Удалить копилку «${goal.name}»?`,
+                  message:
+                    "Копилка и её история взносов исчезнут. Отменить будет нельзя.",
+                  confirmText: "Удалить",
+                  danger: true,
+                  onYes: () => onArchive(goal),
+                })
+              }
               style={{ ...miniBtn, color: C.red, borderColor: "#3a2626" }}
             >
               Удалить копилку
@@ -2319,6 +2371,9 @@ function SettingsModal({
   accent,
   setAccent,
   savingsTotal,
+  uid,
+  setConfirm,
+  onReopen,
   onClose,
   onSave,
 }) {
@@ -2331,6 +2386,16 @@ function SettingsModal({
       period.obligations && period.obligations.length ? period.obligations : [],
   });
   const [saving, setSaving] = useState(false);
+  const [closed, setClosed] = useState([]);
+  useEffect(() => {
+    supabase
+      .from("periods")
+      .select("*")
+      .eq("user_id", uid)
+      .eq("status", "closed")
+      .order("created_at", { ascending: false })
+      .then(({ data }) => setClosed(data || []));
+  }, [uid]);
   const inc = parseNum(draft.income) || 0;
   const oblSum = sumObl(draft.obligations);
   const living =
@@ -2392,6 +2457,7 @@ function SettingsModal({
         <ObligationList
           items={draft.obligations}
           onChange={(o) => setDraft({ ...draft, obligations: o })}
+          allowPaid
         />
 
         <Field
@@ -2441,6 +2507,58 @@ function SettingsModal({
               >
                 {eur(living)}
               </span>
+            </div>
+          </div>
+        )}
+
+        {closed.length > 0 && (
+          <div
+            style={{
+              marginTop: 6,
+              marginBottom: 14,
+              borderTop: `1px solid ${C.border}`,
+              paddingTop: 14,
+            }}
+          >
+            <div style={{ fontSize: 12, color: C.muted, marginBottom: 10 }}>
+              Прошлые периоды
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {closed.map((p) => (
+                <div
+                  key={p.id}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    background: C.surface2,
+                    border: `1px solid ${C.border}`,
+                    borderRadius: 11,
+                    padding: "10px 12px",
+                  }}
+                >
+                  <div>
+                    <div style={{ fontSize: 13.5 }}>{p.label}</div>
+                    <div style={{ fontSize: 11, color: C.faint }}>
+                      с {prettyDate(p.start_date)} · {p.total_days} дн.
+                    </div>
+                  </div>
+                  <button
+                    onClick={() =>
+                      setConfirm({
+                        title: `Вернуть период «${p.label}»?`,
+                        message:
+                          "Он станет активным, а текущий уйдёт в архив. Данные обоих сохранятся.",
+                        confirmText: "Вернуть",
+                        onYes: () => onReopen(p.id),
+                      })
+                    }
+                    style={{ ...miniBtn, padding: "8px 12px", fontSize: 12 }}
+                  >
+                    Сделать активным
+                  </button>
+                </div>
+              ))}
             </div>
           </div>
         )}
@@ -2798,7 +2916,10 @@ function BreakdownCard({
                 fontSize: 12.5,
               }}
             >
-              <span style={{ color: C.faint }}>{o.name}</span>
+              <span style={{ color: C.faint }}>
+                {o.name}
+                {o.paid ? " · оплачено" : ""}
+              </span>
               <span style={{ fontFamily: mono, color: C.faint }}>
                 {eur(parseNum(o.amount) || 0)}
               </span>
@@ -3030,7 +3151,7 @@ function OneoffCard({ extras, addExtra, removeExtra }) {
 }
 
 // ---------- editable list of obligations ----------
-function ObligationList({ items, onChange }) {
+function ObligationList({ items, onChange, allowPaid }) {
   const upd = (i, field, val) => {
     const c = items.map((o, k) => (k === i ? { ...o, [field]: val } : o));
     onChange(c);
@@ -3061,21 +3182,42 @@ function ObligationList({ items, onChange }) {
             onChange={(e) => upd(i, "amount", e.target.value)}
             style={{
               ...inputStyle,
-              width: 90,
+              width: 78,
               fontSize: 14,
               padding: "10px 12px",
+              fontFamily: mono,
             }}
           />
+          {allowPaid && (
+            <button
+              onClick={() => upd(i, "paid", !o.paid)}
+              aria-label="Оплачено"
+              title="Отметить оплаченным"
+              style={{
+                ...miniBtn,
+                padding: "0 11px",
+                display: "flex",
+                alignItems: "center",
+                background: o.paid ? "#12241C" : C.surface2,
+                borderColor: o.paid ? "#1E4436" : C.border,
+              }}
+            >
+              <Icon name="check" size={15} color={o.paid ? C.green : C.faint} />
+            </button>
+          )}
           <button
             onClick={() => rm(i)}
             style={{
               ...miniBtn,
-              padding: "0 12px",
+              padding: "0 11px",
+              display: "flex",
+              alignItems: "center",
               color: C.red,
               borderColor: "#3a2626",
             }}
+            aria-label="Убрать"
           >
-            ×
+            <Icon name="close" size={15} color={C.red} />
           </button>
         </div>
       ))}
@@ -3085,6 +3227,21 @@ function ObligationList({ items, onChange }) {
       >
         + строка
       </button>
+      {allowPaid && items.length > 0 && (
+        <div
+          style={{
+            fontSize: 11.5,
+            color: C.faint,
+            marginTop: 8,
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+          }}
+        >
+          <Icon name="check" size={13} color={C.green} /> — уже оплачено, деньги
+          ушли со счёта
+        </div>
+      )}
     </div>
   );
 }
@@ -3096,8 +3253,8 @@ function AllView({ period, entries, incomes, m, savingsTotal }) {
   const pending = incomes
     .filter((i) => i.status === "pending")
     .reduce((s, i) => s + i.amount, 0);
-  const total =
-    savingsTotal + sumObl(obligations) + m.remainingBudget + pending;
+  const reservedObl = sumObl(obligations.filter((o) => !o.paid));
+  const total = savingsTotal + reservedObl + m.remainingBudget + pending;
 
   const feed = [
     ...entries.map((e) => ({
@@ -3137,7 +3294,7 @@ function AllView({ period, entries, incomes, m, savingsTotal }) {
       <BalanceCard
         total={total}
         savings={savingsTotal}
-        obligations={sumObl(obligations)}
+        obligations={reservedObl}
         living={m.remainingBudget}
         pending={pending}
         hasIncome={period.income > 0}
@@ -3152,9 +3309,11 @@ function AllView({ period, entries, incomes, m, savingsTotal }) {
               fontSize: 14,
               padding: "22px 0",
               textAlign: "center",
+              lineHeight: 1.5,
             }}
           >
-            Операций пока нет.
+            Здесь соберутся все движения —<br />
+            траты, доходы и разовые расходы.
           </div>
         ) : (
           feed.map((f, idx) => (
@@ -3297,6 +3456,122 @@ function BalanceCard({
   );
 }
 
+// ---------- icons ----------
+function Icon({ name, size = 18, color = "currentColor", style }) {
+  const paths = {
+    gear: (
+      <>
+        <circle cx="12" cy="12" r="3" />
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+      </>
+    ),
+    logout: (
+      <>
+        <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+        <polyline points="16 17 21 12 16 7" />
+        <line x1="21" y1="12" x2="9" y2="12" />
+      </>
+    ),
+    edit: (
+      <>
+        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+        <path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+      </>
+    ),
+    close: (
+      <>
+        <line x1="18" y1="6" x2="6" y2="18" />
+        <line x1="6" y1="6" x2="18" y2="18" />
+      </>
+    ),
+    plus: (
+      <>
+        <line x1="12" y1="5" x2="12" y2="19" />
+        <line x1="5" y1="12" x2="19" y2="12" />
+      </>
+    ),
+    check: <polyline points="20 6 9 17 4 12" />,
+    trash: (
+      <>
+        <polyline points="3 6 5 6 21 6" />
+        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+      </>
+    ),
+  };
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke={color}
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      style={style}
+    >
+      {paths[name]}
+    </svg>
+  );
+}
+
+// ---------- confirm dialog ----------
+function ConfirmModal({
+  title,
+  message,
+  confirmText = "Да",
+  danger,
+  onYes,
+  onClose,
+}) {
+  return (
+    <div style={overlay} onClick={onClose}>
+      <div
+        style={{ ...modal, maxWidth: 340 }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>
+          {title}
+        </div>
+        {message && (
+          <div
+            style={{
+              fontSize: 13.5,
+              color: C.muted,
+              lineHeight: 1.45,
+              marginBottom: 16,
+            }}
+          >
+            {message}
+          </div>
+        )}
+        <div style={{ display: "flex", gap: 8 }}>
+          <button
+            onClick={onClose}
+            style={{ ...chip, flex: 1, padding: "12px" }}
+          >
+            Отмена
+          </button>
+          <button
+            onClick={() => {
+              onYes();
+              onClose();
+            }}
+            style={{
+              ...primaryBtn,
+              flex: 1,
+              padding: "12px",
+              background: danger ? C.red : "var(--accent, #3B82F6)",
+            }}
+          >
+            {confirmText}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ---------- small ----------
 function MiniStat({ label, value, color }) {
   return (
@@ -3369,29 +3644,31 @@ const label = {
 const iconBtn = {
   background: C.surface,
   border: `1px solid ${C.border}`,
-  borderRadius: 12,
-  color: C.text,
+  borderRadius: 11,
+  color: C.muted,
   width: 42,
   height: 42,
-  fontSize: 17,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
 };
 const chip = {
   background: C.surface2,
   border: `1px solid ${C.border}`,
-  borderRadius: 10,
+  borderRadius: 11,
   color: C.text,
   fontWeight: 600,
   fontSize: 14,
-  padding: "9px 14px",
+  padding: "10px 14px",
 };
 const miniBtn = {
   background: C.surface2,
   border: `1px solid ${C.border}`,
-  borderRadius: 10,
+  borderRadius: 11,
   color: C.text,
   fontWeight: 600,
   fontSize: 13,
-  padding: "9px 14px",
+  padding: "10px 14px",
 };
 const rowItem = {
   display: "flex",
@@ -3412,17 +3689,17 @@ const inputStyle = {
   border: `1px solid ${C.border}`,
   borderRadius: 12,
   color: C.text,
-  fontFamily: mono,
+  fontFamily: sans,
   padding: "12px 14px",
   fontSize: 16,
 };
 const primaryBtn = {
   background: "var(--accent, #3B82F6)",
   border: "none",
-  borderRadius: 12,
+  borderRadius: 11,
   color: "#fff",
   fontWeight: 700,
-  fontSize: 15,
+  fontSize: 14,
 };
 const tabBar = {
   display: "flex",
