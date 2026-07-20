@@ -1442,7 +1442,7 @@ function FeedScreen({ feedSub, setFeedSub, period, entries, incomes, contribs, m
   const Tile = ({ id, title, value, color, sub }) => (
     <button onClick={() => setOpen(id)} style={{
       background: C.surface, border: `1px solid ${C.border}`, borderRadius: 16,
-      padding: "14px 13px", textAlign: "left", cursor: "pointer",
+      padding: "14px 13px", textAlign: "left", cursor: "pointer", color: C.text,
     }}>
       <div style={{ fontSize: 10.5, letterSpacing: 1, textTransform: "uppercase", color: C.muted }}>{title}</div>
       <div style={{ fontFamily: mono, fontSize: 19, fontWeight: 700, color: color || C.text, marginTop: 6, whiteSpace: "nowrap" }}>{value}</div>
@@ -1466,7 +1466,7 @@ function FeedScreen({ feedSub, setFeedSub, period, entries, incomes, contribs, m
   return (
     <>
       {/* compact balance strip */}
-      <button onClick={() => setOpen("balance")} style={{ ...panel, width: "100%", textAlign: "left", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+      <button onClick={() => setOpen("balance")} style={{ ...panel, width: "100%", textAlign: "left", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", color: C.text }}>
         <div>
           <div style={label}>Текущий баланс</div>
           <div style={{ fontFamily: mono, fontSize: 26, fontWeight: 700, marginTop: 4 }}>{eur(total)}</div>
