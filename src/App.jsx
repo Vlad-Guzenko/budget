@@ -435,7 +435,9 @@ function Tracker({ session, accent, setAccent }) {
       )}
       {nav === "feed" && (
         <FeedScreen feedSub={feedSub} setFeedSub={setFeedSub} period={period}
-          entries={entries} incomes={incomes} contribs={contribs} m={m} savingsTotal={savingsTotal} onRemove={removeEntry} />
+          entries={entries} incomes={incomes} contribs={contribs} m={m} savingsTotal={savingsTotal}
+          onRemove={removeEntry} addExtra={addExtra} removeExtra={removeExtra}
+          goals={goals} chargeToGoal={chargeToGoal} onCloseMonth={() => setShowClose(true)} />
       )}
       {nav === "savings" && (
         <SavingsView goals={goals} contribs={contribs}
@@ -467,7 +469,7 @@ function Tracker({ session, accent, setAccent }) {
       </div>
       <button style={fabStyle} onClick={() => setShowAdd(true)} aria-label="Записать трату"><Icon name="plus" size={26} color="#fff" /></button>
 
-      {showAdd && <AddSheet onAdd={addSpend} onClose={() => setShowAdd(false)} />}
+      {showAdd && <AddSheet onAdd={addSpend} onAddExtra={addExtra} onCharge={chargeToGoal} goals={goals} onClose={() => setShowAdd(false)} />}
       {showSettings && (
         <SettingsModal period={period} accent={accent} setAccent={setAccent} savingsTotal={savingsTotal}
           uid={uid} setConfirm={setConfirm} onReopen={reopenPeriod}
@@ -571,42 +573,6 @@ function BudgetOverview({ m, period, input, setInput, addSpend, entries, removeE
           <span style={{ fontSize: 12.5, color: C.muted }}>поступлений добавлено в бюджет месяца</span>
         </div>
       )}
-
-      {period.income > 0.005 && (
-        <BreakdownCard period={period} income={period.income} budgetIncome={m.budgetIncome}
-          obligations={period.obligations} extras={period.extras} ownSavings={m.reservedSavings}
-          oneoffSpent={m.oneoffSpent} extraSavings={Math.max(0, savingsTotal - m.reservedSavings)}
-          living={m.effectiveLiving} daily={m.baselineDaily} />
-      )}
-
-      {period.income > 0.005 && (
-        <OneoffCard extras={period.extras || []} addExtra={addExtra} removeExtra={removeExtra}
-          goals={goals} onCharge={chargeToGoal} />
-      )}
-
-      {/* forecast */}
-      <div style={{ ...panel, marginTop: 12 }}>
-        <div style={label}>Прогноз остатка к концу периода</div>
-        <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>это можно будет отложить в копилку</div>
-        <div style={{ fontFamily: mono, fontWeight: 700, fontSize: 34, color: m.projectedLeftover < 0 ? C.red : "var(--accent, #3B82F6)", marginTop: 8, letterSpacing: -0.5 }}>
-          {eur(m.projectedLeftover)}
-        </div>
-        <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
-          <MiniStat label={`Осталось из ${eur(m.effectiveLiving)}`} value={eur(m.remainingBudget)} color={m.remainingBudget < 0 ? C.red : C.text} />
-          <MiniStat label="Прогноз трат" value={eur(m.projectedTotal)} color={C.text} />
-        </div>
-        <div style={{ marginTop: 12, fontSize: 12.5, color: C.muted }}>
-          Всего в копилках: <b style={{ color: C.text, fontFamily: mono }}>{eur(savingsTotal)}</b>
-        </div>
-      </div>
-
-      <button onClick={onCloseMonth} style={{ ...chip, marginTop: 12, padding: "13px", width: "100%", fontWeight: 600 }}>
-        Закрыть период · начать новый месяц
-      </button>
-
-      <div style={{ textAlign: "center", color: C.muted, fontSize: 11, marginTop: 16, lineHeight: 1.5 }}>
-        Тикеты на еду считаются отдельно.<br />Дневной лимит фиксирован; поступления — отдельно, во вкладке «Доходы».
-      </div>
     </>
   );
 }
@@ -1454,7 +1420,7 @@ function BalanceCard({ total, savings, obligations, living, pending, hasIncome }
 }
 
 // ---------- FEED screen (лента + баланс + календарь + график) ----------
-function FeedScreen({ feedSub, setFeedSub, period, entries, incomes, contribs, m, savingsTotal, onRemove }) {
+function FeedScreen({ feedSub, setFeedSub, period, entries, incomes, contribs, m, savingsTotal, onRemove, addExtra, removeExtra, goals, chargeToGoal, onCloseMonth }) {
   const obligations = period.obligations || [];
   const extras = period.extras || [];
   const pending = incomes.filter((i) => i.status === "pending").reduce((s, i) => s + i.amount, 0);
@@ -1483,6 +1449,7 @@ function FeedScreen({ feedSub, setFeedSub, period, entries, incomes, contribs, m
       </div>
 
       {feedSub === "ops" && (
+        <>
         <div style={panel}>
           <div style={label}>Все операции</div>
           {feed.length === 0 ? (
@@ -1497,6 +1464,32 @@ function FeedScreen({ feedSub, setFeedSub, period, entries, incomes, contribs, m
             </div>
           ))}
         </div>
+
+        {period.income > 0.005 && (
+          <BreakdownCard period={period} income={period.income} budgetIncome={m.budgetIncome}
+            obligations={period.obligations} extras={period.extras} ownSavings={m.reservedSavings}
+            oneoffSpent={m.oneoffSpent} extraSavings={Math.max(0, savingsTotal - m.reservedSavings)}
+            living={m.effectiveLiving} daily={m.baselineDaily} />
+        )}
+        {period.income > 0.005 && (
+          <OneoffCard extras={period.extras || []} addExtra={addExtra} removeExtra={removeExtra}
+            goals={goals} onCharge={chargeToGoal} />
+        )}
+        <div style={{ ...panel, marginTop: 12 }}>
+          <div style={label}>Прогноз остатка к концу периода</div>
+          <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>это можно будет отложить в копилку</div>
+          <div style={{ fontFamily: mono, fontWeight: 700, fontSize: 34, color: m.projectedLeftover < 0 ? C.red : "var(--accent, #3B82F6)", marginTop: 8, letterSpacing: -0.5 }}>
+            {eur(m.projectedLeftover)}
+          </div>
+          <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
+            <MiniStat label={`Осталось из ${eur(m.effectiveLiving)}`} value={eur(m.remainingBudget)} color={m.remainingBudget < 0 ? C.red : C.text} />
+            <MiniStat label="Прогноз трат" value={eur(m.projectedTotal)} color={C.text} />
+          </div>
+        </div>
+        <button onClick={onCloseMonth} style={{ ...chip, marginTop: 12, padding: "13px", width: "100%", fontWeight: 600 }}>
+          Закрыть период · начать новый месяц
+        </button>
+        </>
       )}
       {feedSub === "cal" && <CalendarView period={period} entries={entries} m={m} />}
       {feedSub === "chart" && <ChartView period={period} entries={entries} m={m} />}
@@ -1562,10 +1555,33 @@ function CalendarView({ period, entries, m }) {
   );
 }
 
-// ---------- ADD spend sheet (FAB) ----------
-function AddSheet({ onAdd, onClose }) {
+// ---------- ADD sheet (единая точка ввода) ----------
+function AddSheet({ onAdd, onAddExtra, onCharge, goals, onClose }) {
   const [amount, setAmount] = useState("");
-  const submit = () => { const n = parseNum(amount); if (isFinite(n) && n > 0) { onAdd(n); onClose(); } };
+  const [kind, setKind] = useState("day");   // day | oneoff | savings
+  const [name, setName] = useState("");
+  const [goalId, setGoalId] = useState(goals && goals[0] ? goals[0].id : "");
+  const hasGoals = goals && goals.length > 0;
+
+  const submit = () => {
+    const n = parseNum(amount); if (!isFinite(n) || n <= 0) return;
+    if (kind === "day") onAdd(n);
+    else if (kind === "oneoff") onAddExtra(name, n, todayStr());
+    else if (kind === "savings" && goalId) onCharge(goalId, n, name);
+    onClose();
+  };
+
+  const opt = (k, title, subtitle) => (
+    <button onClick={() => setKind(k)} style={{
+      flex: 1, background: kind === k ? "var(--accent, #3B82F6)" : C.surface2,
+      border: `1px solid ${kind === k ? "transparent" : C.border}`, borderRadius: 12,
+      padding: "10px 6px", color: kind === k ? "#fff" : C.text, textAlign: "center",
+    }}>
+      <div style={{ fontSize: 13, fontWeight: 700 }}>{title}</div>
+      <div style={{ fontSize: 10, marginTop: 2, color: kind === k ? "rgba(255,255,255,.75)" : C.faint }}>{subtitle}</div>
+    </button>
+  );
+
   return (
     <div style={{ ...overlay, alignItems: "flex-end", padding: 0 }} onClick={onClose}>
       <div style={sheet} onClick={(e) => e.stopPropagation()}>
@@ -1578,7 +1594,26 @@ function AddSheet({ onAdd, onClose }) {
             <button key={v} onClick={() => setAmount(String((parseNum(amount) || 0) + v))} style={{ ...chip, flex: 1, textAlign: "center" }}>+{v}</button>
           ))}
         </div>
-        <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+
+        <div style={{ fontSize: 12, color: C.muted, margin: "16px 0 8px" }}>Из каких денег?</div>
+        <div style={{ display: "flex", gap: 8 }}>
+          {opt("day", "Еда на день", "дневной лимит")}
+          {opt("oneoff", "Разовое", "крупное, не еда")}
+          {hasGoals && opt("savings", "Из копилки", "не тронет еду")}
+        </div>
+
+        {kind !== "day" && (
+          <input type="text" placeholder="На что? (билеты, родители…)" value={name}
+            onChange={(e) => setName(e.target.value)}
+            style={{ ...inputStyle, marginTop: 10, fontSize: 15 }} />
+        )}
+        {kind === "savings" && goals.length > 1 && (
+          <select value={goalId} onChange={(e) => setGoalId(e.target.value)} style={{ ...inputStyle, marginTop: 8 }}>
+            {goals.map((g) => (<option key={g.id} value={g.id}>{g.name}</option>))}
+          </select>
+        )}
+
+        <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
           <button onClick={onClose} style={{ ...chip, flex: 1, padding: "14px" }}>Отмена</button>
           <button onClick={submit} style={{ ...primaryBtn, flex: 2, padding: "14px" }}>+ Добавить</button>
         </div>
