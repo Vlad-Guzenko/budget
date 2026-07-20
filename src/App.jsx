@@ -1421,11 +1421,13 @@ function BalanceCard({ total, savings, obligations, living, pending, hasIncome }
 
 // ---------- FEED screen (лента + баланс + календарь + график) ----------
 function FeedScreen({ feedSub, setFeedSub, period, entries, incomes, contribs, m, savingsTotal, onRemove, addExtra, removeExtra, goals, chargeToGoal, onCloseMonth }) {
+  const [open, setOpen] = useState(null); // breakdown | oneoff | forecast | cal | chart | balance
   const obligations = period.obligations || [];
   const extras = period.extras || [];
   const pending = incomes.filter((i) => i.status === "pending").reduce((s, i) => s + i.amount, 0);
   const reservedObl = sumObl(obligations.filter((o) => !o.paid));
   const total = savingsTotal + reservedObl + m.remainingBudget + pending;
+  const oneoffTotal = sumObl(extras) + m.oneoffSpent;
 
   const feed = [
     ...entries.map((e) => ({ kind: "spend", date: e.date, amount: -e.amount, title: "Трата" })),
@@ -1437,62 +1439,120 @@ function FeedScreen({ feedSub, setFeedSub, period, entries, incomes, contribs, m
     : f.kind === "oneoff" ? "из копилки"
     : f.kind === "income" ? (f.status === "budget" ? "в бюджет" : f.status === "savings" ? "в копилку" : "не распределено") : null;
 
+  const Tile = ({ id, title, value, color, sub }) => (
+    <button onClick={() => setOpen(id)} style={{
+      background: C.surface, border: `1px solid ${C.border}`, borderRadius: 16,
+      padding: "14px 13px", textAlign: "left", cursor: "pointer",
+    }}>
+      <div style={{ fontSize: 10.5, letterSpacing: 1, textTransform: "uppercase", color: C.muted }}>{title}</div>
+      <div style={{ fontFamily: mono, fontSize: 19, fontWeight: 700, color: color || C.text, marginTop: 6, whiteSpace: "nowrap" }}>{value}</div>
+      {sub && <div style={{ fontSize: 10.5, color: C.faint, marginTop: 3 }}>{sub}</div>}
+    </button>
+  );
+
+  const closeModal = () => setOpen(null);
+  const Sheet = ({ title, children }) => (
+    <div style={{ ...overlay, alignItems: "flex-end", padding: 0 }} onClick={closeModal}>
+      <div style={{ ...sheet, maxHeight: "86vh", overflowY: "auto" }} onClick={(e) => e.stopPropagation()}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+          <div style={{ fontSize: 16, fontWeight: 700 }}>{title}</div>
+          <button onClick={closeModal} style={{ ...miniBtn, padding: "7px 10px", display: "flex" }}><Icon name="close" size={15} color={C.muted} /></button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+
   return (
     <>
-      <BalanceCard total={total} savings={savingsTotal} obligations={reservedObl}
-        living={m.remainingBudget} pending={pending} hasIncome={period.income > 0} />
+      {/* compact balance strip */}
+      <button onClick={() => setOpen("balance")} style={{ ...panel, width: "100%", textAlign: "left", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div>
+          <div style={label}>Текущий баланс</div>
+          <div style={{ fontFamily: mono, fontSize: 26, fontWeight: 700, marginTop: 4 }}>{eur(total)}</div>
+        </div>
+        <div style={{ fontSize: 11, color: C.faint, textAlign: "right", lineHeight: 1.5 }}>
+          копилка {eur(savingsTotal)}<br />жизнь {eur(m.remainingBudget)}
+        </div>
+      </button>
 
-      <div style={{ ...tabBar, marginTop: 12, marginBottom: 14 }}>
-        {[["ops", "Операции"], ["cal", "Календарь"], ["chart", "График"]].map(([k, lbl]) => (
-          <button key={k} onClick={() => setFeedSub(k)} style={tabBtn(feedSub === k, true)}>{lbl}</button>
+      {/* tiles */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 12 }}>
+        <Tile id="breakdown" title="Расклад" value={eur(m.effectiveLiving)} sub={`на жизнь · ${eur(m.baselineDaily)}/день`} />
+        <Tile id="forecast" title="Прогноз" value={eur(m.projectedLeftover)} color={m.projectedLeftover < 0 ? C.red : C.green} sub="остаток к концу" />
+        <Tile id="oneoff" title="Разовые" value={oneoffTotal > 0.005 ? "−" + eur(oneoffTotal) : "0 €"} color={oneoffTotal > 0.005 ? C.amber : C.muted} sub={`${extras.length + (contribs || []).filter((c) => c.source === "oneoff").length} шт.`} />
+        <Tile id="cal" title="Календарь" value={prettyDate(m.today)} sub="дни месяца" />
+        <Tile id="chart" title="График" value={eur(m.totalSpent)} sub="всего потрачено" />
+        <button onClick={onCloseMonth} style={{
+          background: C.surface2, border: `1px dashed ${C.border}`, borderRadius: 16,
+          padding: "14px 13px", textAlign: "left", cursor: "pointer",
+        }}>
+          <div style={{ fontSize: 10.5, letterSpacing: 1, textTransform: "uppercase", color: C.muted }}>Период</div>
+          <div style={{ fontSize: 13.5, fontWeight: 600, color: C.text, marginTop: 7 }}>Закрыть месяц →</div>
+        </button>
+      </div>
+
+      {/* operations */}
+      <div style={{ ...panel, marginTop: 12 }}>
+        <div style={label}>Все операции</div>
+        {feed.length === 0 ? (
+          <div style={{ color: C.muted, fontSize: 14, padding: "22px 0", textAlign: "center", lineHeight: 1.5 }}>Здесь соберутся все движения —<br />траты, доходы и разовые расходы.</div>
+        ) : feed.map((f, idx) => (
+          <div key={idx} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderTop: `1px solid ${C.border}` }}>
+            <div>
+              <div style={{ fontSize: 14 }}>{f.title}</div>
+              <div style={{ fontSize: 11, color: C.faint }}>{prettyDate(f.date)}{tagFor(f) ? ` · ${tagFor(f)}` : ""}</div>
+            </div>
+            <span style={{ fontFamily: mono, fontSize: 15, color: f.amount >= 0 ? C.green : C.text }}>{signEur(f.amount)}</span>
+          </div>
         ))}
       </div>
 
-      {feedSub === "ops" && (
-        <>
-        <div style={panel}>
-          <div style={label}>Все операции</div>
-          {feed.length === 0 ? (
-            <div style={{ color: C.muted, fontSize: 14, padding: "22px 0", textAlign: "center", lineHeight: 1.5 }}>Здесь соберутся все движения —<br />траты, доходы и разовые расходы.</div>
-          ) : feed.map((f, idx) => (
-            <div key={idx} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderTop: `1px solid ${C.border}` }}>
-              <div>
-                <div style={{ fontSize: 14 }}>{f.title}</div>
-                <div style={{ fontSize: 11, color: C.faint }}>{prettyDate(f.date)}{tagFor(f) ? ` · ${tagFor(f)}` : ""}</div>
-              </div>
-              <span style={{ fontFamily: mono, fontSize: 15, color: f.amount >= 0 ? C.green : C.text }}>{signEur(f.amount)}</span>
-            </div>
-          ))}
-        </div>
-
-        {period.income > 0.005 && (
+      {/* modals */}
+      {open === "balance" && (
+        <Sheet title="Текущий баланс">
+          <BalanceCard total={total} savings={savingsTotal} obligations={reservedObl}
+            living={m.remainingBudget} pending={pending} hasIncome={period.income > 0} />
+        </Sheet>
+      )}
+      {open === "breakdown" && (
+        <Sheet title="Откуда взялся бюджет">
           <BreakdownCard period={period} income={period.income} budgetIncome={m.budgetIncome}
             obligations={period.obligations} extras={period.extras} ownSavings={m.reservedSavings}
             oneoffSpent={m.oneoffSpent} extraSavings={Math.max(0, savingsTotal - m.reservedSavings)}
             living={m.effectiveLiving} daily={m.baselineDaily} />
-        )}
-        {period.income > 0.005 && (
+        </Sheet>
+      )}
+      {open === "oneoff" && (
+        <Sheet title="Разовые расходы">
           <OneoffCard extras={period.extras || []} addExtra={addExtra} removeExtra={removeExtra}
             goals={goals} onCharge={chargeToGoal} />
-        )}
-        <div style={{ ...panel, marginTop: 12 }}>
-          <div style={label}>Прогноз остатка к концу периода</div>
-          <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>это можно будет отложить в копилку</div>
-          <div style={{ fontFamily: mono, fontWeight: 700, fontSize: 34, color: m.projectedLeftover < 0 ? C.red : "var(--accent, #3B82F6)", marginTop: 8, letterSpacing: -0.5 }}>
-            {eur(m.projectedLeftover)}
-          </div>
-          <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
-            <MiniStat label={`Осталось из ${eur(m.effectiveLiving)}`} value={eur(m.remainingBudget)} color={m.remainingBudget < 0 ? C.red : C.text} />
-            <MiniStat label="Прогноз трат" value={eur(m.projectedTotal)} color={C.text} />
-          </div>
-        </div>
-        <button onClick={onCloseMonth} style={{ ...chip, marginTop: 12, padding: "13px", width: "100%", fontWeight: 600 }}>
-          Закрыть период · начать новый месяц
-        </button>
-        </>
+        </Sheet>
       )}
-      {feedSub === "cal" && <CalendarView period={period} entries={entries} m={m} />}
-      {feedSub === "chart" && <ChartView period={period} entries={entries} m={m} />}
+      {open === "forecast" && (
+        <Sheet title="Прогноз">
+          <div style={panel}>
+            <div style={{ fontSize: 12, color: C.muted }}>Остаток к концу периода — это можно будет отложить в копилку</div>
+            <div style={{ fontFamily: mono, fontWeight: 700, fontSize: 34, color: m.projectedLeftover < 0 ? C.red : "var(--accent, #3B82F6)", marginTop: 8, letterSpacing: -0.5 }}>
+              {eur(m.projectedLeftover)}
+            </div>
+            <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
+              <MiniStat label={`Осталось из ${eur(m.effectiveLiving)}`} value={eur(m.remainingBudget)} color={m.remainingBudget < 0 ? C.red : C.text} />
+              <MiniStat label="Прогноз трат" value={eur(m.projectedTotal)} color={C.text} />
+            </div>
+          </div>
+        </Sheet>
+      )}
+      {open === "cal" && (
+        <Sheet title="Календарь">
+          <CalendarView period={period} entries={entries} m={m} />
+        </Sheet>
+      )}
+      {open === "chart" && (
+        <Sheet title="График">
+          <ChartView period={period} entries={entries} m={m} />
+        </Sheet>
+      )}
     </>
   );
 }
