@@ -118,13 +118,15 @@ function Tracker({ session, accent, setAccent }) {
   const [goals, setGoals] = useState([]);
   const [contribs, setContribs] = useState([]);
   const [input, setInput] = useState("");
-  const [tab, setTab] = useState("budget");       // budget | income | savings
-  const [sub, setSub] = useState("overview");      // overview | chart | history
+  const [nav, setNav] = useState("home");          // home | feed | savings | income
+  const [feedSub, setFeedSub] = useState("ops");   // ops | cal | chart
+  const [showAdd, setShowAdd] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
 
   // modals
   const [routeFor, setRouteFor] = useState(null);  // income needing goal choice
   const [showClose, setShowClose] = useState(false);
+  const [confirm, setConfirm] = useState(null);    // { title, message, confirmText, danger, onYes }
 
   // ---- load ----
   const load = useCallback(async () => {
@@ -141,6 +143,7 @@ function Tracker({ session, accent, setAccent }) {
     setPeriod({ id: per.id, label: per.label, livingBudget: Number(per.living_budget),
       totalDays: per.total_days, startISO: per.start_date,
       income: Number(per.income || 0), obligations: per.obligations || [],
+      extras: per.extras || [],
       reservedSavings: Number(per.reserved_savings || 0) });
 
     const { data: ent } = await supabase.from("entries").select("*")
@@ -177,6 +180,12 @@ function Tracker({ session, accent, setAccent }) {
     () => contribs.filter((c) => c.source === "income").reduce((s, c) => s + c.amount, 0),
     [contribs]
   );
+  // разовые расходы, оплаченные «из копилки» (отрицательные взносы source='oneoff').
+  // они уменьшают накопления и НЕ должны возвращаться в дневной лимит.
+  const oneoffSavings = useMemo(
+    () => contribs.filter((c) => c.source === "oneoff").reduce((s, c) => s + c.amount, 0),
+    [contribs]
+  );
 
   // ---- math (envelope + доходы, отправленные в бюджет) ----
   const m = useMemo(() => {
@@ -187,12 +196,13 @@ function Tracker({ session, accent, setAccent }) {
     const daysRemaining = Math.max(1, period.totalDays - todayIndex);
     const completedDays = todayIndex;
 
-    // на жизнь считается живьём: доход − обязательные − копилка «из своих денег»
+    // на жизнь считается живьём: доход − обязательные − разовые − копилка «из своих денег»
     // (сторонние поступления в копилку сюда не входят; старый период income=0 → сохранённое живое)
     const ownSavings = savingsTotal - externalSavings;
+    const oneoffSum = sumObl(period.extras);
     const reservedSavings = period.income > 0 ? ownSavings : period.reservedSavings;
     const baseLiving = period.income > 0
-      ? Math.max(0, period.income - sumObl(period.obligations) - ownSavings)
+      ? Math.max(0, period.income - sumObl(period.obligations) - oneoffSum - ownSavings + oneoffSavings)
       : period.livingBudget;
 
     const budgetIncome = incomes.filter((i) => i.status === "budget" && i.periodId === period.id)
@@ -220,9 +230,9 @@ function Tracker({ session, accent, setAccent }) {
     const endISO = addDays(period.startISO, period.totalDays - 1);
 
     return { today, todayIndex, daysRemaining, spentToday, totalSpent, remainingBudget, budgetIncome,
-      effectiveLiving, baseLiving, reservedSavings, baselineDaily, carryIn, todayAllowance, leftToday, carryTomorrow,
+      effectiveLiving, baseLiving, reservedSavings, oneoffSpent: -oneoffSavings, baselineDaily, carryIn, todayAllowance, leftToday, carryTomorrow,
       projectedTotal, projectedLeftover, ratio, status, endISO };
-  }, [period, entries, incomes, savingsTotal, externalSavings]);
+  }, [period, entries, incomes, savingsTotal, externalSavings, oneoffSavings]);
 
 
   // ---- spend handlers ----
@@ -237,6 +247,20 @@ function Tracker({ session, accent, setAccent }) {
     setEntries((prev) => prev.map((e) => e.id === optimistic.id ? { id: data.id, date: data.spent_on, amount: Number(data.amount) } : e));
   };
   const removeEntry = async (id) => { setEntries((prev) => prev.filter((e) => e.id !== id)); await supabase.from("entries").delete().eq("id", id); };
+
+  // ---- one-off large expenses (не дневные, не плановые) ----
+  const addExtra = async (name, amount, date) => {
+    const n = parseNum(amount); if (!isFinite(n) || n <= 0 || !period) return;
+    const item = { name: name || "Расход", amount: n, date: date || todayStr() };
+    const next = [...(period.extras || []), item];
+    setPeriod((p) => ({ ...p, extras: next }));
+    await supabase.from("periods").update({ extras: next }).eq("id", period.id);
+  };
+  const removeExtra = async (idx) => {
+    const next = (period.extras || []).filter((_, i) => i !== idx);
+    setPeriod((p) => ({ ...p, extras: next }));
+    await supabase.from("periods").update({ extras: next }).eq("id", period.id);
+  };
 
   // ---- income handlers ----
   const addIncome = async (amount, date, source) => {
@@ -277,7 +301,7 @@ function Tracker({ session, accent, setAccent }) {
   };
   // when user taps "в копилку": choose goal if several
   const sendToSavings = (income) => {
-    if (goals.length === 0) { setTab("savings"); return; }
+    if (goals.length === 0) { setNav("savings"); return; }
     if (goals.length === 1) routeIncome(income, "savings", goals[0].id);
     else setRouteFor(income);
   };
@@ -315,6 +339,9 @@ function Tracker({ session, accent, setAccent }) {
     setContribs((prev) => prev.filter((c) => c.id !== id));
     await supabase.from("contributions").delete().eq("id", id);
   };
+  // разовый расход «из копилки» = отрицательный взнос
+  const chargeToGoal = (goalId, amount, name) =>
+    contribute(goalId, -Math.abs(parseNum(amount) || 0), name || "Разовый расход", "oneoff");
 
   // ---- close month / new period (с раскладом дохода) ----
   const closeMonth = async ({ leftoverMove, leftoverGoal, np }) => {
@@ -346,14 +373,21 @@ function Tracker({ session, accent, setAccent }) {
     await load();
   };
 
-  const saveSettings = async (draft) => {
-    // draft: { label, income, obligations, totalDays, startISO }
+  const reopenPeriod = async (pid) => {
+    await supabase.from("periods").update({ status: "closed" }).eq("id", period.id);
+    await supabase.from("periods").update({ status: "active" }).eq("id", pid);
+    setShowSettings(false);
+    setLoaded(false);
+    await load();
+  };
+
+  const saveSettings = async (draft) => {    // draft: { label, income, obligations, totalDays, startISO }
     const inc = parseNum(draft.income) || 0;
     const obl = (draft.obligations || []).filter((o) => (parseNum(o.amount) || 0) > 0)
-      .map((o) => ({ name: o.name || "Расход", amount: parseNum(o.amount) || 0 }));
+      .map((o) => ({ name: o.name || "Расход", amount: parseNum(o.amount) || 0, paid: !!o.paid }));
     // для текущего периода "отложено" = то, что уже лежит в копилках (не трогаем, не дублируем)
     const reserved = inc > 0 ? goals.reduce((s, g) => s + goalBalance(g, contribs), 0) : period.reservedSavings;
-    const living = inc > 0 ? Math.max(0, inc - sumObl(obl) - reserved) : period.livingBudget;
+    const living = inc > 0 ? Math.max(0, inc - sumObl(obl) - sumObl(period.extras) - reserved) : period.livingBudget;
     const patch = {
       label: draft.label || period.label, totalDays: parseInt(draft.totalDays) || period.totalDays,
       startISO: draft.startISO || period.startISO, income: inc, obligations: obl,
@@ -371,63 +405,73 @@ function Tracker({ session, accent, setAccent }) {
 
   const pendingTotal = incomes.filter((i) => i.status === "pending").reduce((s, i) => s + i.amount, 0);
 
+  const navTitle = { feed: "Лента", savings: "Копилка", income: "Доходы" }[nav];
+
   return (
     <div style={wrap}>
       {/* header */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
         <div>
-          <div style={{ fontSize: 11, letterSpacing: 2, color: C.muted, textTransform: "uppercase" }}>{period.label}</div>
-          <div style={{ fontSize: 13, marginTop: 3 }}>
-            до {prettyDate(m.endISO)} · осталось <b style={{ color: "var(--accent, #3B82F6)" }}>{m.daysRemaining} дн.</b>
-          </div>
-        </div>
-        <div style={{ display: "flex", gap: 8 }}>
-          <button onClick={() => setShowSettings(true)} style={iconBtn} aria-label="Настройки">⚙︎</button>
-          <button onClick={() => supabase.auth.signOut()} style={iconBtn} aria-label="Выйти">⏻</button>
-        </div>
-      </div>
-
-      {/* primary tabs */}
-      <div style={tabBar}>
-        {[["budget", "Бюджет"], ["income", "Доходы"], ["savings", "Копилка"]].map(([k, lbl]) => (
-          <button key={k} onClick={() => setTab(k)} style={tabBtn(tab === k)}>
-            {lbl}{k === "income" && pendingTotal > 0.005 ? " •" : ""}
-          </button>
-        ))}
-      </div>
-
-      {tab === "budget" && (
-        <>
-          <div style={{ ...tabBar, marginBottom: 14 }}>
-            {[["overview", "Обзор"], ["chart", "График"], ["history", "История"]].map(([k, lbl]) => (
-              <button key={k} onClick={() => setSub(k)} style={tabBtn(sub === k, true)}>{lbl}</button>
-            ))}
-          </div>
-
-          {sub === "overview" && (
-            <BudgetOverview m={m} period={period} input={input} setInput={setInput}
-              addSpend={addSpend} entries={entries} removeEntry={removeEntry}
-              savingsTotal={savingsTotal} onCloseMonth={() => setShowClose(true)} />
+          {nav === "home" ? (
+            <>
+              <div style={{ fontSize: 11, letterSpacing: 2, color: C.muted, textTransform: "uppercase" }}>{period.label}</div>
+              <div style={{ fontSize: 13, marginTop: 3 }}>
+                до {prettyDate(m.endISO)} · осталось <b style={{ color: "var(--accent, #3B82F6)" }}>{m.daysRemaining} дн.</b>
+              </div>
+            </>
+          ) : (
+            <div style={{ fontSize: 19, fontWeight: 700 }}>{navTitle}</div>
           )}
-          {sub === "chart" && <ChartView period={period} entries={entries} m={m} />}
-          {sub === "history" && <HistoryView period={period} entries={entries} m={m} onRemove={removeEntry} />}
-        </>
-      )}
+        </div>
+        <button onClick={() => setShowSettings(true)} style={iconBtn} aria-label="Настройки"><Icon name="gear" /></button>
+      </div>
 
-      {tab === "income" && (
+      {nav === "home" && (
+        <BudgetOverview m={m} period={period} input={input} setInput={setInput}
+          addSpend={addSpend} entries={entries} removeEntry={removeEntry}
+          addExtra={addExtra} removeExtra={removeExtra} hideRecord
+          goals={goals} chargeToGoal={chargeToGoal}
+          savingsTotal={savingsTotal} onCloseMonth={() => setShowClose(true)} />
+      )}
+      {nav === "feed" && (
+        <FeedScreen feedSub={feedSub} setFeedSub={setFeedSub} period={period}
+          entries={entries} incomes={incomes} contribs={contribs} m={m} savingsTotal={savingsTotal} onRemove={removeEntry} />
+      )}
+      {nav === "savings" && (
+        <SavingsView goals={goals} contribs={contribs}
+          addGoal={addGoal} editGoal={editGoal} archiveGoal={archiveGoal}
+          contribute={contribute} removeContribution={removeContribution} setConfirm={setConfirm} />
+      )}
+      {nav === "income" && (
         <IncomeView incomes={incomes} goals={goals} m={m}
           addIncome={addIncome} deleteIncome={deleteIncome}
           routeIncome={routeIncome} sendToSavings={sendToSavings} />
       )}
 
-      {tab === "savings" && (
-        <SavingsView goals={goals} contribs={contribs}
-          addGoal={addGoal} editGoal={editGoal} archiveGoal={archiveGoal}
-          contribute={contribute} removeContribution={removeContribution} />
-      )}
+      {/* bottom nav */}
+      <div style={navBar}>
+        {[["home", "Дом", "home"], ["feed", "Лента", "list"]].map(([k, lbl, ic]) => (
+          <button key={k} onClick={() => { setNav(k); }} style={navItem(nav === k)}>
+            <Icon name={ic} size={21} color={nav === k ? "var(--accent, #3B82F6)" : C.faint} />{lbl}
+          </button>
+        ))}
+        <div style={{ width: 58, flexShrink: 0 }} />
+        {[["savings", "Копилка", "target"], ["income", "Доходы", "income"]].map(([k, lbl, ic]) => (
+          <button key={k} onClick={() => { setNav(k); }} style={navItem(nav === k)}>
+            <span style={{ position: "relative" }}>
+              <Icon name={ic} size={21} color={nav === k ? "var(--accent, #3B82F6)" : C.faint} />
+              {k === "income" && pendingTotal > 0.005 && <span style={{ position: "absolute", top: -2, right: -4, width: 7, height: 7, borderRadius: "50%", background: C.amber }} />}
+            </span>{lbl}
+          </button>
+        ))}
+      </div>
+      <button style={fabStyle} onClick={() => setShowAdd(true)} aria-label="Записать трату"><Icon name="plus" size={26} color="#fff" /></button>
 
+      {showAdd && <AddSheet onAdd={addSpend} onClose={() => setShowAdd(false)} />}
       {showSettings && (
         <SettingsModal period={period} accent={accent} setAccent={setAccent} savingsTotal={savingsTotal}
+          uid={uid} setConfirm={setConfirm} onReopen={reopenPeriod}
+          onLogout={() => setConfirm({ title: "Выйти из аккаунта?", message: "Данные сохранены в облаке — при следующем входе всё будет на месте.", confirmText: "Выйти", onYes: () => supabase.auth.signOut() })}
           onClose={() => setShowSettings(false)} onSave={saveSettings} />
       )}
       {routeFor && (
@@ -438,12 +482,15 @@ function Tracker({ session, accent, setAccent }) {
         <CloseMonthModal m={m} goals={goals} contribs={contribs}
           onClose={() => setShowClose(false)} onConfirm={closeMonth} />
       )}
+      {confirm && (
+        <ConfirmModal {...confirm} onClose={() => setConfirm(null)} />
+      )}
     </div>
   );
 }
 
 // ---------- BUDGET · overview ----------
-function BudgetOverview({ m, period, input, setInput, addSpend, entries, removeEntry, savingsTotal, onCloseMonth }) {
+function BudgetOverview({ m, period, input, setInput, addSpend, entries, removeEntry, addExtra, removeExtra, hideRecord, goals, chargeToGoal, savingsTotal, onCloseMonth }) {
   const statusColor = { green: C.green, amber: C.amber, red: C.red }[m.status];
   const todayEntries = entries.filter((e) => e.date === m.today);
   return (
@@ -462,7 +509,7 @@ function BudgetOverview({ m, period, input, setInput, addSpend, entries, removeE
           <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
             <div style={{ fontFamily: mono, fontWeight: 700, fontSize: 34, letterSpacing: -0.5, color: m.leftToday < 0 ? C.red : C.text, whiteSpace: "nowrap" }}>{eur(m.leftToday)}</div>
             <div style={{ fontSize: 11, color: statusColor, marginTop: 5 }}>{m.status === "red" ? "перебор" : m.status === "amber" ? "почти лимит" : "в норме"}</div>
-            <div style={{ fontSize: 11, color: C.faint, marginTop: 2 }}>из {eur(m.todayAllowance)}</div>
+            <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>из {eur(m.todayAllowance)}</div>
           </div>
         </div>
 
@@ -490,33 +537,21 @@ function BudgetOverview({ m, period, input, setInput, addSpend, entries, removeE
         </div>
       </div>
 
-      {m.budgetIncome > 0.005 && period.income <= 0.005 && (
-        <div style={{ ...panel, marginTop: 12, display: "flex", alignItems: "center", gap: 9, padding: "12px 16px" }}>
-          <span style={{ fontFamily: mono, fontWeight: 700, color: C.green }}>+{eur(m.budgetIncome)}</span>
-          <span style={{ fontSize: 12.5, color: C.muted }}>поступлений добавлено в бюджет месяца</span>
-        </div>
-      )}
-
-      {period.income > 0.005 && (
-        <BreakdownCard period={period} income={period.income} budgetIncome={m.budgetIncome}
-          obligations={period.obligations} ownSavings={m.reservedSavings}
-          extraSavings={Math.max(0, savingsTotal - m.reservedSavings)}
-          living={m.effectiveLiving} daily={m.baselineDaily} />
-      )}
-
       {/* record */}
+      {!hideRecord && (
       <div style={{ ...panel, marginTop: 12 }}>
         <div style={{ ...label, marginBottom: 10 }}>Записать трату</div>
         <div style={{ display: "flex", gap: 8 }}>
           <input type="number" inputMode="decimal" placeholder="0,00" value={input}
             onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addSpend(input)}
-            style={{ ...inputStyle, flex: 1, fontSize: 20, fontWeight: 600 }} />
+            style={{ ...inputStyle, flex: 1, fontSize: 20, fontWeight: 600, fontFamily: mono }} />
           <button onClick={() => addSpend(input)} style={{ ...primaryBtn, padding: "0 20px" }}>+ Добавить</button>
         </div>
         <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
           {[3, 5, 10, 15].map((v) => (<button key={v} onClick={() => addSpend(v)} style={chip}>+{v} €</button>))}
         </div>
       </div>
+      )}
 
       {todayEntries.length > 0 && (
         <div style={{ ...panel, marginTop: 12 }}>
@@ -530,11 +565,30 @@ function BudgetOverview({ m, period, input, setInput, addSpend, entries, removeE
         </div>
       )}
 
+      {m.budgetIncome > 0.005 && period.income <= 0.005 && (
+        <div style={{ ...panel, marginTop: 12, display: "flex", alignItems: "center", gap: 9, padding: "12px 16px" }}>
+          <span style={{ fontFamily: mono, fontWeight: 700, color: C.green }}>+{eur(m.budgetIncome)}</span>
+          <span style={{ fontSize: 12.5, color: C.muted }}>поступлений добавлено в бюджет месяца</span>
+        </div>
+      )}
+
+      {period.income > 0.005 && (
+        <BreakdownCard period={period} income={period.income} budgetIncome={m.budgetIncome}
+          obligations={period.obligations} extras={period.extras} ownSavings={m.reservedSavings}
+          oneoffSpent={m.oneoffSpent} extraSavings={Math.max(0, savingsTotal - m.reservedSavings)}
+          living={m.effectiveLiving} daily={m.baselineDaily} />
+      )}
+
+      {period.income > 0.005 && (
+        <OneoffCard extras={period.extras || []} addExtra={addExtra} removeExtra={removeExtra}
+          goals={goals} onCharge={chargeToGoal} />
+      )}
+
       {/* forecast */}
       <div style={{ ...panel, marginTop: 12 }}>
         <div style={label}>Прогноз остатка к концу периода</div>
         <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>это можно будет отложить в копилку</div>
-        <div style={{ fontFamily: mono, fontWeight: 700, fontSize: 34, color: m.projectedLeftover < 0 ? C.red : C.green, marginTop: 8, letterSpacing: -0.5 }}>
+        <div style={{ fontFamily: mono, fontWeight: 700, fontSize: 34, color: m.projectedLeftover < 0 ? C.red : "var(--accent, #3B82F6)", marginTop: 8, letterSpacing: -0.5 }}>
           {eur(m.projectedLeftover)}
         </div>
         <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
@@ -633,7 +687,7 @@ function IncomeView({ incomes, goals, m, addIncome, deleteIncome, routeIncome, s
 }
 
 // ---------- SAVINGS ----------
-function SavingsView({ goals, contribs, addGoal, editGoal, archiveGoal, contribute, removeContribution }) {
+function SavingsView({ goals, contribs, addGoal, editGoal, archiveGoal, contribute, removeContribution, setConfirm }) {
   const [creating, setCreating] = useState(false);
   const [nm, setNm] = useState(""); const [tg, setTg] = useState(""); const [dl, setDl] = useState(""); const [sd, setSd] = useState("");
   const total = goals.reduce((s, g) => s + goalBalance(g, contribs), 0);
@@ -668,14 +722,14 @@ function SavingsView({ goals, contribs, addGoal, editGoal, archiveGoal, contribu
         {goals.map((g) => (
           <GoalCard key={g.id} goal={g} contribs={contribs}
             onContribute={contribute} onRemoveContribution={removeContribution}
-            onEdit={editGoal} onArchive={archiveGoal} />
+            onEdit={editGoal} onArchive={archiveGoal} setConfirm={setConfirm} />
         ))}
       </div>
     </>
   );
 }
 
-function GoalCard({ goal, contribs, onContribute, onRemoveContribution, onEdit, onArchive }) {
+function GoalCard({ goal, contribs, onContribute, onRemoveContribution, onEdit, onArchive, setConfirm }) {
   const [open, setOpen] = useState(false);
   const [amt, setAmt] = useState("");
   const [mode, setMode] = useState(null); // 'add' | 'sub' | 'edit'
@@ -695,13 +749,13 @@ function GoalCard({ goal, contribs, onContribute, onRemoveContribution, onEdit, 
   const doSub = async () => { const n = parseNum(amt); if (isFinite(n) && n > 0) await onContribute(goal.id, -n, null, "manual"); setAmt(""); setMode(null); };
   const doEdit = async () => { await onEdit(goal, { name: enm || goal.name, target: isFinite(parseNum(etg)) ? parseNum(etg) : null, deadline: edl || null }); setMode(null); };
 
-  const srcLabel = { income: "поступление", month_close: "остаток периода", period_start: "из зарплаты", manual: "вручную" };
+  const srcLabel = { income: "поступление", month_close: "остаток периода", period_start: "из зарплаты", oneoff: "разовый расход", manual: "вручную" };
 
   return (
     <div style={panel}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
         <div style={{ fontSize: 16, fontWeight: 700 }}>{goal.name}</div>
-        <button onClick={() => setMode(mode === "edit" ? null : "edit")} style={{ ...miniBtn, padding: "5px 10px" }}>✎</button>
+        <button onClick={() => setMode(mode === "edit" ? null : "edit")} style={{ ...miniBtn, padding: "7px 10px", display: "flex", alignItems: "center" }} aria-label="Изменить"><Icon name="edit" size={15} color={C.muted} /></button>
       </div>
 
       {mode === "edit" ? (
@@ -710,7 +764,7 @@ function GoalCard({ goal, contribs, onContribute, onRemoveContribution, onEdit, 
           <input type="number" inputMode="decimal" value={etg} onChange={(e) => setEtg(e.target.value)} placeholder="Цель, € (пусто = без цели)" style={{ ...inputStyle, marginTop: 8 }} />
           <input type="date" value={edl || ""} onChange={(e) => setEdl(e.target.value)} style={{ ...inputStyle, marginTop: 8 }} />
           <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-            <button onClick={() => onArchive(goal)} style={{ ...miniBtn, color: C.red, borderColor: "#3a2626" }}>Удалить копилку</button>
+            <button onClick={() => setConfirm({ title: `Удалить копилку «${goal.name}»?`, message: "Копилка и её история взносов исчезнут. Отменить будет нельзя.", confirmText: "Удалить", danger: true, onYes: () => onArchive(goal) })} style={{ ...miniBtn, color: C.red, borderColor: "#3a2626" }}>Удалить копилку</button>
             <div style={{ flex: 1 }} />
             <button onClick={() => setMode(null)} style={miniBtn}>Отмена</button>
             <button onClick={doEdit} style={{ ...primaryBtn, padding: "8px 14px", fontSize: 13 }}>Сохранить</button>
@@ -929,12 +983,18 @@ function HistoryView({ period, entries, m, onRemove }) {
 }
 
 // ---------- MODALS ----------
-function SettingsModal({ period, accent, setAccent, savingsTotal, onClose, onSave }) {
+function SettingsModal({ period, accent, setAccent, savingsTotal, uid, setConfirm, onReopen, onLogout, onClose, onSave }) {
   const [draft, setDraft] = useState({
     label: period.label, income: period.income || "", totalDays: period.totalDays, startISO: period.startISO,
     obligations: (period.obligations && period.obligations.length ? period.obligations : []),
   });
   const [saving, setSaving] = useState(false);
+  const [closed, setClosed] = useState([]);
+  useEffect(() => {
+    supabase.from("periods").select("*").eq("user_id", uid).eq("status", "closed")
+      .order("created_at", { ascending: false })
+      .then(({ data }) => setClosed(data || []));
+  }, [uid]);
   const inc = parseNum(draft.income) || 0;
   const oblSum = sumObl(draft.obligations);
   const living = inc > 0 ? Math.max(0, inc - oblSum - savingsTotal) : period.livingBudget;
@@ -959,7 +1019,7 @@ function SettingsModal({ period, accent, setAccent, savingsTotal, onClose, onSav
         <Field label="Пришло за период, € (баланс/зарплата)" value={draft.income} onChange={(v) => setDraft({ ...draft, income: v })} />
 
         <div style={{ fontSize: 12, color: C.muted, marginBottom: 6 }}>Обязательные расходы</div>
-        <ObligationList items={draft.obligations} onChange={(o) => setDraft({ ...draft, obligations: o })} />
+        <ObligationList items={draft.obligations} onChange={(o) => setDraft({ ...draft, obligations: o })} allowPaid />
 
         <Field label="Всего дней" value={draft.totalDays} onChange={(v) => setDraft({ ...draft, totalDays: v })} />
         <Field label="Старт (ГГГГ-ММ-ДД)" value={draft.startISO} type="text" onChange={(v) => setDraft({ ...draft, startISO: v })} />
@@ -978,10 +1038,34 @@ function SettingsModal({ period, accent, setAccent, savingsTotal, onClose, onSav
           </div>
         )}
 
+        {closed.length > 0 && (
+          <div style={{ marginTop: 6, marginBottom: 14, borderTop: `1px solid ${C.border}`, paddingTop: 14 }}>
+            <div style={{ fontSize: 12, color: C.muted, marginBottom: 10 }}>Прошлые периоды</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {closed.map((p) => (
+                <div key={p.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 11, padding: "10px 12px" }}>
+                  <div>
+                    <div style={{ fontSize: 13.5 }}>{p.label}</div>
+                    <div style={{ fontSize: 11, color: C.faint }}>с {prettyDate(p.start_date)} · {p.total_days} дн.</div>
+                  </div>
+                  <button onClick={() => setConfirm({
+                    title: `Вернуть период «${p.label}»?`,
+                    message: "Он станет активным, а текущий уйдёт в архив. Данные обоих сохранятся.",
+                    confirmText: "Вернуть", onYes: () => onReopen(p.id),
+                  })} style={{ ...miniBtn, padding: "8px 12px", fontSize: 12 }}>Сделать активным</button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
           <button onClick={onClose} style={{ ...chip, flex: 1, padding: "12px" }}>Отмена</button>
           <button disabled={saving} onClick={async () => { setSaving(true); await onSave(draft); }} style={{ ...primaryBtn, flex: 1, padding: "12px" }}>{saving ? "…" : "Сохранить"}</button>
         </div>
+        <button onClick={() => { onClose(); onLogout(); }} style={{ background: "none", border: "none", color: C.muted, fontSize: 13, width: "100%", marginTop: 14, padding: 6, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+          <Icon name="logout" size={15} color={C.muted} /> Выйти из аккаунта
+        </button>
       </div>
     </div>
   );
@@ -1101,10 +1185,13 @@ function CloseMonthModal({ m, goals, contribs, onClose, onConfirm }) {
 }
 
 // ---------- breakdown of income allocation ----------
-function BreakdownCard({ period, income, budgetIncome, obligations, ownSavings, extraSavings, living, daily }) {
+function BreakdownCard({ period, income, budgetIncome, obligations, extras, ownSavings, oneoffSpent, extraSavings, living, daily }) {
   const [open, setOpen] = useState(false);
+  const [openEx, setOpenEx] = useState(false);
   const obl = obligations || [];
   const oblSum = sumObl(obl);
+  const ex = extras || [];
+  const exSum = sumObl(ex);
   const Row = ({ k, v, c, sign }) => (
     <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontSize: 13.5 }}>
       <span style={{ color: C.muted }}>{k}</span>
@@ -1125,11 +1212,28 @@ function BreakdownCard({ period, income, budgetIncome, obligations, ownSavings, 
         </button>
         {open && obl.map((o, i) => (
           <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0 3px 14px", fontSize: 12.5 }}>
-            <span style={{ color: C.faint }}>{o.name}</span>
+            <span style={{ color: C.faint }}>{o.name}{o.paid ? " · оплачено" : ""}</span>
             <span style={{ fontFamily: mono, color: C.faint }}>{eur(parseNum(o.amount) || 0)}</span>
           </div>
         ))}
+        {exSum > 0.005 && (
+          <>
+            <button onClick={() => setOpenEx(!openEx)} style={{ width: "100%", background: "none", padding: 0 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontSize: 13.5 }}>
+                <span style={{ color: C.muted }}>Разовые расходы ({ex.length}) ▾</span>
+                <span style={{ fontFamily: mono, color: C.red }}>−{eur(exSum)}</span>
+              </div>
+            </button>
+            {openEx && ex.map((o, i) => (
+              <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0 3px 14px", fontSize: 12.5 }}>
+                <span style={{ color: C.faint }}>{o.name}{o.date ? ` · ${prettyDate(o.date)}` : ""}</span>
+                <span style={{ fontFamily: mono, color: C.faint }}>{eur(parseNum(o.amount) || 0)}</span>
+              </div>
+            ))}
+          </>
+        )}
         {ownSavings > 0.005 && <Row k="Отложено в копилку" v={ownSavings} c={C.green} sign="−" />}
+        {oneoffSpent > 0.005 && <Row k="Разовое из копилки" v={oneoffSpent} c={C.amber} sign="−" />}
         <div style={{ height: 1, background: C.border, margin: "8px 0" }} />
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
           <span style={{ fontSize: 13.5, fontWeight: 600 }}>На жизнь</span>
@@ -1146,8 +1250,89 @@ function BreakdownCard({ period, income, budgetIncome, obligations, ownSavings, 
   );
 }
 
+// ---------- one-off large expenses card ----------
+function OneoffCard({ extras, addExtra, removeExtra, goals, onCharge }) {
+  const [adding, setAdding] = useState(false);
+  const [name, setName] = useState("");
+  const [amount, setAmount] = useState("");
+  const [date, setDate] = useState(todayStr());
+  const [src, setSrc] = useState("living");
+  const [goalId, setGoalId] = useState(goals && goals[0] ? goals[0].id : "");
+  const hasGoals = goals && goals.length > 0;
+  const total = sumObl(extras);
+  const sorted = [...extras.map((e, i) => ({ ...e, i }))].sort((a, b) => (a.date < b.date ? 1 : -1));
+
+  const submit = async () => {
+    if (src === "savings" && goalId) { await onCharge(goalId, amount, name); }
+    else { await addExtra(name, amount, date); }
+    setName(""); setAmount(""); setDate(todayStr()); setSrc("living"); setAdding(false);
+  };
+
+  return (
+    <div style={{ ...panel, marginTop: 12 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+        <div style={label}>Разовые расходы</div>
+        {total > 0.005 && <div style={{ fontFamily: mono, fontSize: 15, color: C.red }}>−{eur(total)}</div>}
+      </div>
+      <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>крупные разовые траты (родители, покупка…) — не входят в дневной лимит</div>
+
+      {sorted.length > 0 && (
+        <div style={{ marginTop: 10 }}>
+          {sorted.map((e) => (
+            <div key={e.i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 0", borderTop: `1px solid ${C.border}` }}>
+              <div>
+                <div style={{ fontSize: 14 }}>{e.name}</div>
+                <div style={{ fontSize: 11, color: C.faint }}>{e.date ? prettyDate(e.date) : ""}</div>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <span style={{ fontFamily: mono, fontSize: 15 }}>{eur(parseNum(e.amount) || 0)}</span>
+                <button onClick={() => removeExtra(e.i)} style={delBtn}>удалить</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {!adding ? (
+        <button onClick={() => setAdding(true)} style={{ ...miniBtn, width: "100%", padding: "11px", marginTop: 12 }}>+ Разовый расход</button>
+      ) : (
+        <div style={{ marginTop: 12 }}>
+          <input type="text" placeholder="На что (Родители, билеты…)" value={name} onChange={(e) => setName(e.target.value)} style={inputStyle} />
+          <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+            <input type="number" inputMode="decimal" placeholder="Сумма, €" value={amount} onChange={(e) => setAmount(e.target.value)} style={{ ...inputStyle, flex: 1, fontFamily: mono }} />
+            <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={{ ...inputStyle, flex: 1 }} />
+          </div>
+          {hasGoals && (
+            <>
+              <div style={{ fontSize: 12, color: C.muted, margin: "12px 0 6px" }}>Откуда списать</div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={() => setSrc("living")} style={{ ...miniBtn, flex: 1, padding: "11px", background: src === "living" ? "var(--accent, #3B82F6)" : C.surface2, color: src === "living" ? "#fff" : C.text, borderColor: src === "living" ? "transparent" : C.border }}>Из денег на жизнь</button>
+                <button onClick={() => setSrc("savings")} style={{ ...miniBtn, flex: 1, padding: "11px", background: src === "savings" ? "var(--accent, #3B82F6)" : C.surface2, color: src === "savings" ? "#fff" : C.text, borderColor: src === "savings" ? "transparent" : C.border }}>Из копилки</button>
+              </div>
+              {src === "savings" && (
+                <>
+                  {goals.length > 1 && (
+                    <select value={goalId} onChange={(e) => setGoalId(e.target.value)} style={{ ...inputStyle, marginTop: 8 }}>
+                      {goals.map((g) => (<option key={g.id} value={g.id}>{g.name}</option>))}
+                    </select>
+                  )}
+                  <div style={{ fontSize: 11.5, color: C.faint, marginTop: 8, lineHeight: 1.4 }}>Спишется из накопления и не тронет дневную еду. Появится в «Копилке» и «Ленте».</div>
+                </>
+              )}
+            </>
+          )}
+          <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+            <button onClick={() => { setAdding(false); setName(""); setAmount(""); setSrc("living"); }} style={{ ...chip, flex: 1, padding: "11px" }}>Отмена</button>
+            <button onClick={submit} style={{ ...primaryBtn, flex: 1, padding: "11px" }}>Добавить</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ---------- editable list of obligations ----------
-function ObligationList({ items, onChange }) {
+function ObligationList({ items, onChange, allowPaid }) {
   const upd = (i, field, val) => { const c = items.map((o, k) => k === i ? { ...o, [field]: val } : o); onChange(c); };
   const add = () => onChange([...items, { name: "", amount: "" }]);
   const rm = (i) => onChange(items.filter((_, k) => k !== i));
@@ -1158,11 +1343,288 @@ function ObligationList({ items, onChange }) {
           <input type="text" placeholder="Название" value={o.name} onChange={(e) => upd(i, "name", e.target.value)}
             style={{ ...inputStyle, flex: 1, fontSize: 14, padding: "10px 12px" }} />
           <input type="number" inputMode="decimal" placeholder="€" value={o.amount} onChange={(e) => upd(i, "amount", e.target.value)}
-            style={{ ...inputStyle, width: 90, fontSize: 14, padding: "10px 12px" }} />
-          <button onClick={() => rm(i)} style={{ ...miniBtn, padding: "0 12px", color: C.red, borderColor: "#3a2626" }}>×</button>
+            style={{ ...inputStyle, width: 78, fontSize: 14, padding: "10px 12px", fontFamily: mono }} />
+          {allowPaid && (
+            <button onClick={() => upd(i, "paid", !o.paid)} aria-label="Оплачено" title="Отметить оплаченным"
+              style={{ ...miniBtn, padding: "0 11px", display: "flex", alignItems: "center",
+                background: o.paid ? "#12241C" : C.surface2, borderColor: o.paid ? "#1E4436" : C.border }}>
+              <Icon name="check" size={15} color={o.paid ? C.green : C.faint} />
+            </button>
+          )}
+          <button onClick={() => rm(i)} style={{ ...miniBtn, padding: "0 11px", display: "flex", alignItems: "center", color: C.red, borderColor: "#3a2626" }} aria-label="Убрать"><Icon name="close" size={15} color={C.red} /></button>
         </div>
       ))}
       <button onClick={add} style={{ ...miniBtn, width: "100%", padding: "10px", marginTop: 2 }}>+ строка</button>
+      {allowPaid && items.length > 0 && (
+        <div style={{ fontSize: 11.5, color: C.faint, marginTop: 8, display: "flex", alignItems: "center", gap: 6 }}>
+          <Icon name="check" size={13} color={C.green} /> — уже оплачено, деньги ушли со счёта
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------- ALL · balance + operations feed ----------
+function AllView({ period, entries, incomes, m, savingsTotal }) {
+  const obligations = period.obligations || [];
+  const extras = period.extras || [];
+  const pending = incomes.filter((i) => i.status === "pending").reduce((s, i) => s + i.amount, 0);
+  const reservedObl = sumObl(obligations.filter((o) => !o.paid));
+  const total = savingsTotal + reservedObl + m.remainingBudget + pending;
+
+  const feed = [
+    ...entries.map((e) => ({ kind: "spend", date: e.date, amount: -e.amount, title: "Трата" })),
+    ...extras.map((e) => ({ kind: "extra", date: e.date, amount: -(parseNum(e.amount) || 0), title: e.name || "Разовый расход" })),
+    ...incomes.map((i) => ({ kind: "income", date: i.date, amount: i.amount, title: i.source || "Поступление", status: i.status })),
+  ].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+
+  const tagFor = (f) => f.kind === "extra" ? "разовый"
+    : f.kind === "income" ? (f.status === "budget" ? "в бюджет" : f.status === "savings" ? "в копилку" : "не распределено")
+    : null;
+
+  return (
+    <>
+      <BalanceCard total={total} savings={savingsTotal} obligations={reservedObl}
+        living={m.remainingBudget} pending={pending} hasIncome={period.income > 0} />
+
+      <div style={{ ...panel, marginTop: 12 }}>
+        <div style={label}>Все операции</div>
+        {feed.length === 0 ? (
+          <div style={{ color: C.muted, fontSize: 14, padding: "22px 0", textAlign: "center", lineHeight: 1.5 }}>Здесь соберутся все движения —<br />траты, доходы и разовые расходы.</div>
+        ) : feed.map((f, idx) => (
+          <div key={idx} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderTop: `1px solid ${C.border}` }}>
+            <div>
+              <div style={{ fontSize: 14 }}>{f.title}</div>
+              <div style={{ fontSize: 11, color: C.faint }}>{prettyDate(f.date)}{tagFor(f) ? ` · ${tagFor(f)}` : ""}</div>
+            </div>
+            <span style={{ fontFamily: mono, fontSize: 15, color: f.amount >= 0 ? C.green : C.text }}>{signEur(f.amount)}</span>
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
+
+function BalanceCard({ total, savings, obligations, living, pending, hasIncome }) {
+  const [bank, setBank] = useState("");
+  const b = parseNum(bank);
+  const diff = isFinite(b) ? b - total : null;
+  const Row = ({ k, v, c }) => (
+    <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontSize: 13.5 }}>
+      <span style={{ color: C.muted }}>{k}</span>
+      <span style={{ fontFamily: mono, color: c || C.text }}>{eur(v)}</span>
+    </div>
+  );
+  return (
+    <div style={panel}>
+      <div style={label}>Текущий баланс</div>
+      <div style={{ fontFamily: mono, fontWeight: 700, fontSize: 34, marginTop: 8, letterSpacing: -0.5 }}>{eur(total)}</div>
+      <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>столько должно быть на счету</div>
+
+      {!hasIncome && (
+        <div style={{ fontSize: 12, color: C.amber, marginTop: 10 }}>Заполни «Пришло за период» в настройках, чтобы баланс считался точно.</div>
+      )}
+
+      <div style={{ marginTop: 12, borderTop: `1px solid ${C.border}`, paddingTop: 8 }}>
+        <Row k="В копилках" v={savings} c={C.green} />
+        <Row k="Под обязательные" v={obligations} />
+        <Row k="Остаток на жизнь" v={living} c={living < 0 ? C.red : C.text} />
+        {pending > 0.005 && <Row k="Не распределено" v={pending} c={C.amber} />}
+      </div>
+
+      <div style={{ marginTop: 14, borderTop: `1px solid ${C.border}`, paddingTop: 12 }}>
+        <div style={{ fontSize: 12, color: C.muted, marginBottom: 6 }}>Сверить с банком</div>
+        <input type="number" inputMode="decimal" placeholder="Баланс в банке, €" value={bank}
+          onChange={(e) => setBank(e.target.value)} style={inputStyle} />
+        {diff !== null && (
+          Math.abs(diff) < 0.01 ? (
+            <div style={{ fontSize: 13, color: C.green, marginTop: 8 }}>✓ Сходится с банком</div>
+          ) : (
+            <div style={{ fontSize: 12.5, color: C.amber, marginTop: 8, lineHeight: 1.4 }}>
+              Расхождение: <b style={{ fontFamily: mono }}>{signEur(diff)}</b><br />
+              {diff < 0
+                ? "в банке меньше — вероятно, есть незаписанная трата или уже оплаченное обязательное."
+                : "в банке больше — возможно, пришли деньги, не занесённые в «Доходы»."}
+            </div>
+          )
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------- FEED screen (лента + баланс + календарь + график) ----------
+function FeedScreen({ feedSub, setFeedSub, period, entries, incomes, contribs, m, savingsTotal, onRemove }) {
+  const obligations = period.obligations || [];
+  const extras = period.extras || [];
+  const pending = incomes.filter((i) => i.status === "pending").reduce((s, i) => s + i.amount, 0);
+  const reservedObl = sumObl(obligations.filter((o) => !o.paid));
+  const total = savingsTotal + reservedObl + m.remainingBudget + pending;
+
+  const feed = [
+    ...entries.map((e) => ({ kind: "spend", date: e.date, amount: -e.amount, title: "Трата" })),
+    ...extras.map((e) => ({ kind: "extra", date: e.date, amount: -(parseNum(e.amount) || 0), title: e.name || "Разовый расход" })),
+    ...(contribs || []).filter((c) => c.source === "oneoff").map((c) => ({ kind: "oneoff", date: (c.createdAt || "").slice(0, 10) || m.today, amount: c.amount, title: c.note || "Разовое из копилки" })),
+    ...incomes.map((i) => ({ kind: "income", date: i.date, amount: i.amount, title: i.source || "Поступление", status: i.status })),
+  ].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+  const tagFor = (f) => f.kind === "extra" ? "разовый"
+    : f.kind === "oneoff" ? "из копилки"
+    : f.kind === "income" ? (f.status === "budget" ? "в бюджет" : f.status === "savings" ? "в копилку" : "не распределено") : null;
+
+  return (
+    <>
+      <BalanceCard total={total} savings={savingsTotal} obligations={reservedObl}
+        living={m.remainingBudget} pending={pending} hasIncome={period.income > 0} />
+
+      <div style={{ ...tabBar, marginTop: 12, marginBottom: 14 }}>
+        {[["ops", "Операции"], ["cal", "Календарь"], ["chart", "График"]].map(([k, lbl]) => (
+          <button key={k} onClick={() => setFeedSub(k)} style={tabBtn(feedSub === k, true)}>{lbl}</button>
+        ))}
+      </div>
+
+      {feedSub === "ops" && (
+        <div style={panel}>
+          <div style={label}>Все операции</div>
+          {feed.length === 0 ? (
+            <div style={{ color: C.muted, fontSize: 14, padding: "22px 0", textAlign: "center", lineHeight: 1.5 }}>Здесь соберутся все движения —<br />траты, доходы и разовые расходы.</div>
+          ) : feed.map((f, idx) => (
+            <div key={idx} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderTop: `1px solid ${C.border}` }}>
+              <div>
+                <div style={{ fontSize: 14 }}>{f.title}</div>
+                <div style={{ fontSize: 11, color: C.faint }}>{prettyDate(f.date)}{tagFor(f) ? ` · ${tagFor(f)}` : ""}</div>
+              </div>
+              <span style={{ fontFamily: mono, fontSize: 15, color: f.amount >= 0 ? C.green : C.text }}>{signEur(f.amount)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {feedSub === "cal" && <CalendarView period={period} entries={entries} m={m} />}
+      {feedSub === "chart" && <ChartView period={period} entries={entries} m={m} />}
+    </>
+  );
+}
+
+// ---------- CALENDAR heatmap ----------
+function CalendarView({ period, entries, m }) {
+  const [sel, setSel] = useState(m.today);
+  const base = m.baselineDaily;
+  const now = dateFromISO(m.today);
+  const year = now.getFullYear(), month = now.getMonth();
+  const startWeekday = (new Date(year, month, 1).getDay() + 6) % 7;
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const dayData = (iso) => entries.filter((e) => e.date === iso).reduce((s, e) => s + e.amount, 0);
+  const colorFor = (iso, spent) => {
+    if (iso > m.today) return null;
+    const r = base > 0 ? spent / base : 0;
+    return r > 1 ? C.red : r > 0.75 ? C.amber : C.green;
+  };
+  const cells = [];
+  for (let i = 0; i < startWeekday; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) cells.push(`${year}-${pad(month + 1)}-${pad(d)}`);
+  const selSpent = dayData(sel);
+  const selCol = colorFor(sel, selSpent);
+
+  return (
+    <div style={panel}>
+      <div style={label}>{RU_MONTHS[month]} · расходы по дням</div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 5, marginTop: 12 }}>
+        {["пн", "вт", "ср", "чт", "пт", "сб", "вс"].map((w) => (
+          <div key={w} style={{ fontSize: 9, color: C.faint, textAlign: "center" }}>{w}</div>
+        ))}
+        {cells.map((iso, i) => {
+          if (!iso) return <div key={i} />;
+          const spent = dayData(iso);
+          const col = colorFor(iso, spent);
+          const dnum = Number(iso.slice(-2));
+          const isToday = iso === m.today;
+          const isSel = iso === sel;
+          return (
+            <button key={i} onClick={() => setSel(iso)} style={{
+              aspectRatio: "1", borderRadius: 8, fontFamily: mono, fontSize: 11,
+              display: "flex", alignItems: "center", justifyContent: "center",
+              background: col ? col + "2e" : C.surface2,
+              border: isSel ? "2px solid #fff" : isToday ? `1px solid ${C.muted}` : `1px solid ${col ? col + "55" : C.border}`,
+              color: col || C.faint,
+            }}>{dnum}</button>
+          );
+        })}
+      </div>
+      <div style={{ display: "flex", gap: 12, justifyContent: "center", marginTop: 12, fontSize: 10, color: C.muted }}>
+        <span><span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 2, background: C.green, marginRight: 4 }} />норма</span>
+        <span><span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 2, background: C.amber, marginRight: 4 }} />впритык</span>
+        <span><span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 2, background: C.red, marginRight: 4 }} />перебор</span>
+      </div>
+      <div style={{ marginTop: 14, borderTop: `1px solid ${C.border}`, paddingTop: 12, display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+        <div style={{ fontSize: 14, fontWeight: 600 }}>{prettyDate(sel)}{sel === m.today ? " · сегодня" : ""}</div>
+        <div style={{ fontFamily: mono, fontSize: 16, color: selCol || C.muted }}>{sel > m.today ? "—" : eur(selSpent)}</div>
+      </div>
+    </div>
+  );
+}
+
+// ---------- ADD spend sheet (FAB) ----------
+function AddSheet({ onAdd, onClose }) {
+  const [amount, setAmount] = useState("");
+  const submit = () => { const n = parseNum(amount); if (isFinite(n) && n > 0) { onAdd(n); onClose(); } };
+  return (
+    <div style={{ ...overlay, alignItems: "flex-end", padding: 0 }} onClick={onClose}>
+      <div style={sheet} onClick={(e) => e.stopPropagation()}>
+        <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 14 }}>Записать трату</div>
+        <input type="number" inputMode="decimal" placeholder="0,00" autoFocus value={amount}
+          onChange={(e) => setAmount(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()}
+          style={{ ...inputStyle, fontSize: 24, fontWeight: 700, fontFamily: mono, textAlign: "center" }} />
+        <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+          {[3, 5, 10, 15].map((v) => (
+            <button key={v} onClick={() => setAmount(String((parseNum(amount) || 0) + v))} style={{ ...chip, flex: 1, textAlign: "center" }}>+{v}</button>
+          ))}
+        </div>
+        <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+          <button onClick={onClose} style={{ ...chip, flex: 1, padding: "14px" }}>Отмена</button>
+          <button onClick={submit} style={{ ...primaryBtn, flex: 2, padding: "14px" }}>+ Добавить</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------- icons ----------
+function Icon({ name, size = 18, color = "currentColor", style }) {
+  const paths = {
+    gear: <><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" /></>,
+    logout: <><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" /></>,
+    edit: <><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></>,
+    close: <><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></>,
+    plus: <><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></>,
+    check: <polyline points="20 6 9 17 4 12" />,
+    trash: <><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></>,
+    home: <><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /><polyline points="9 22 9 12 15 12 15 22" /></>,
+    list: <><line x1="8" y1="6" x2="21" y2="6" /><line x1="8" y1="12" x2="21" y2="12" /><line x1="8" y1="18" x2="21" y2="18" /><line x1="3" y1="6" x2="3.01" y2="6" /><line x1="3" y1="12" x2="3.01" y2="12" /><line x1="3" y1="18" x2="3.01" y2="18" /></>,
+    target: <><circle cx="12" cy="12" r="9" /><circle cx="12" cy="12" r="4" /></>,
+    income: <><line x1="12" y1="19" x2="12" y2="5" /><polyline points="5 12 12 5 19 12" /></>,
+  };
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color}
+      strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={style}>
+      {paths[name]}
+    </svg>
+  );
+}
+
+// ---------- confirm dialog ----------
+function ConfirmModal({ title, message, confirmText = "Да", danger, onYes, onClose }) {
+  return (
+    <div style={overlay} onClick={onClose}>
+      <div style={{ ...modal, maxWidth: 340 }} onClick={(e) => e.stopPropagation()}>
+        <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>{title}</div>
+        {message && <div style={{ fontSize: 13.5, color: C.muted, lineHeight: 1.45, marginBottom: 16 }}>{message}</div>}
+        <div style={{ display: "flex", gap: 8 }}>
+          <button onClick={onClose} style={{ ...chip, flex: 1, padding: "12px" }}>Отмена</button>
+          <button onClick={() => { onYes(); onClose(); }}
+            style={{ ...primaryBtn, flex: 1, padding: "12px", background: danger ? C.red : "var(--accent, #3B82F6)" }}>
+            {confirmText}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1188,19 +1650,32 @@ function Field({ label, value, onChange, type = "number" }) {
 
 // ---------- styles ----------
 const wrap = { fontFamily: sans, background: C.bg, color: C.text, minHeight: "100vh",
-  maxWidth: 460, margin: "0 auto", padding: "calc(20px + env(safe-area-inset-top)) 16px calc(32px + env(safe-area-inset-bottom))",
+  maxWidth: 460, margin: "0 auto", padding: "calc(20px + env(safe-area-inset-top)) 16px calc(96px + env(safe-area-inset-bottom))",
   display: "flex", flexDirection: "column" };
 const panel = { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 18, padding: 18 };
 const label = { fontSize: 12, letterSpacing: 1.5, color: C.muted, textTransform: "uppercase" };
-const iconBtn = { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, color: C.text, width: 42, height: 42, fontSize: 17 };
-const chip = { background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 10, color: C.text, fontWeight: 600, fontSize: 14, padding: "9px 14px" };
-const miniBtn = { background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 10, color: C.text, fontWeight: 600, fontSize: 13, padding: "9px 14px" };
+const iconBtn = { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 11, color: C.muted, width: 42, height: 42, display: "flex", alignItems: "center", justifyContent: "center" };
+const chip = { background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 11, color: C.text, fontWeight: 600, fontSize: 14, padding: "10px 14px" };
+const miniBtn = { background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 11, color: C.text, fontWeight: 600, fontSize: 13, padding: "10px 14px" };
 const rowItem = { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 0", borderTop: `1px solid ${C.border}` };
 const delBtn = { background: "transparent", border: "none", color: C.red, fontSize: 12 };
-const inputStyle = { width: "100%", background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 12, color: C.text, fontFamily: mono, padding: "12px 14px", fontSize: 16 };
-const primaryBtn = { background: "var(--accent, #3B82F6)", border: "none", borderRadius: 12, color: "#fff", fontWeight: 700, fontSize: 15 };
+const inputStyle = { width: "100%", background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 12, color: C.text, fontFamily: sans, padding: "12px 14px", fontSize: 16 };
+const primaryBtn = { background: "var(--accent, #3B82F6)", border: "none", borderRadius: 11, color: "#fff", fontWeight: 700, fontSize: 14 };
 const tabBar = { display: "flex", gap: 5, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 13, padding: 4 };
 const tabBtn = (active, small) => ({ flex: 1, padding: small ? "8px" : "10px", borderRadius: 10, fontWeight: 500,
   fontSize: small ? 13 : 14, background: active ? "var(--accent, #3B82F6)" : "transparent", color: active ? "#fff" : C.muted, transition: "background .15s" });
 const overlay = { position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20, zIndex: 50 };
 const modal = { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 18, padding: 20, width: "100%", maxWidth: 380 };
+const navBar = { position: "fixed", bottom: 0, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 460,
+  height: "calc(62px + env(safe-area-inset-bottom))", paddingBottom: "env(safe-area-inset-bottom)",
+  background: "rgba(17,20,26,.94)", backdropFilter: "blur(14px)", WebkitBackdropFilter: "blur(14px)",
+  borderTop: `1px solid ${C.border}`, display: "flex", alignItems: "center", zIndex: 40 };
+const navItem = (active) => ({ flex: 1, background: "none", border: "none", cursor: "pointer",
+  color: active ? "var(--accent, #3B82F6)" : C.faint, display: "flex", flexDirection: "column",
+  alignItems: "center", gap: 3, fontSize: 10, fontWeight: 500, padding: "6px 0", height: 62, justifyContent: "center" });
+const fabStyle = { position: "fixed", bottom: "calc(26px + env(safe-area-inset-bottom))", left: "50%", transform: "translateX(-50%)",
+  width: 56, height: 56, borderRadius: "50%", background: "var(--accent, #3B82F6)", border: "3px solid " + C.bg,
+  color: "#fff", display: "flex", alignItems: "center", justifyContent: "center",
+  boxShadow: "0 8px 20px rgba(59,130,246,.4)", zIndex: 41, cursor: "pointer" };
+const sheet = { width: "100%", maxWidth: 460, background: C.surface, borderTopLeftRadius: 22, borderTopRightRadius: 22,
+  borderTop: `1px solid ${C.border}`, padding: "20px 18px calc(26px + env(safe-area-inset-bottom))", margin: "0 auto" };
