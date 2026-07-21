@@ -219,6 +219,7 @@ function Tracker({ session, accent, setAccent }) {
     const todayAllowance = baselineDaily + carryIn;
     const leftToday = todayAllowance - spentToday;
     const carryTomorrow = carryIn + (baselineDaily - spentToday);
+    const tomorrowAllowance = carryTomorrow + baselineDaily; // стартовый лимит завтра
 
     let projectedTotal;
     if (completedDays >= 1) { const avg = spentBeforeToday / completedDays; projectedTotal = spentBeforeToday + avg * daysRemaining; }
@@ -230,7 +231,7 @@ function Tracker({ session, accent, setAccent }) {
     const endISO = addDays(period.startISO, period.totalDays - 1);
 
     return { today, todayIndex, daysRemaining, spentToday, totalSpent, remainingBudget, budgetIncome,
-      effectiveLiving, baseLiving, reservedSavings, oneoffSpent: -oneoffSavings, baselineDaily, carryIn, todayAllowance, leftToday, carryTomorrow,
+      effectiveLiving, baseLiving, reservedSavings, oneoffSpent: -oneoffSavings, baselineDaily, carryIn, todayAllowance, leftToday, carryTomorrow, tomorrowAllowance,
       projectedTotal, projectedLeftover, ratio, status, endISO };
   }, [period, entries, incomes, savingsTotal, externalSavings, oneoffSavings]);
 
@@ -530,7 +531,7 @@ function BudgetOverview({ m, period, input, setInput, addSpend, entries, removeE
 
         <div style={{ display: "flex", width: "100%", marginTop: 16, gap: 8 }}>
           {[["база", eur(m.baselineDaily)], ["потрачено", eur(m.spentToday)],
-            ...(m.daysRemaining > 1 ? [["завтра", signEur(m.carryTomorrow)]] : [])].map(([k, v], i) => (
+            ...(m.daysRemaining > 1 ? [["завтра", signEur(m.tomorrowAllowance)]] : [])].map(([k, v], i) => (
             <div key={i} style={{ flex: 1, textAlign: "center", background: C.surface2, borderRadius: 10, padding: "8px 4px" }}>
               <div style={{ fontSize: 10, color: C.faint, textTransform: "uppercase", letterSpacing: 0.5 }}>{k}</div>
               <div style={{ fontFamily: mono, fontSize: 13, color: C.muted, marginTop: 3, whiteSpace: "nowrap" }}>{v}</div>
