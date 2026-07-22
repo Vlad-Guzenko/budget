@@ -196,30 +196,34 @@ function Tracker({ session, accent, setAccent }) {
     const daysRemaining = Math.max(1, period.totalDays - todayIndex);
     const completedDays = todayIndex;
 
-    // на жизнь считается живьём: доход − обязательные − разовые − копилка «из своих денег»
-    // (сторонние поступления в копилку сюда не входят; старый период income=0 → сохранённое живое)
+    // база считается ЧИСТОЙ (без разовых): прошлые дни не переписываются.
+    // разовые «из жизни» и доходы «в бюджет» размазываются только на оставшиеся дни.
     const ownSavings = savingsTotal - externalSavings;
     const oneoffSum = sumObl(period.extras);
     const reservedSavings = period.income > 0 ? ownSavings : period.reservedSavings;
-    const baseLiving = period.income > 0
-      ? Math.max(0, period.income - sumObl(period.obligations) - oneoffSum - ownSavings + oneoffSavings)
+    const coreLiving = period.income > 0
+      ? Math.max(0, period.income - sumObl(period.obligations) - ownSavings + oneoffSavings)
       : period.livingBudget;
 
     const budgetIncome = incomes.filter((i) => i.status === "budget" && i.periodId === period.id)
       .reduce((s, i) => s + i.amount, 0);
-    const effectiveLiving = baseLiving + budgetIncome;
-    const baselineDaily = effectiveLiving / period.totalDays;
+    const livingPool = coreLiving + budgetIncome - oneoffSum;   // итоговый котёл на жизнь
+    const baselineDaily = coreLiving / period.totalDays;         // чистая база
+    const remainingAdjust = (budgetIncome - oneoffSum) / daysRemaining;
+    const remainingAdjustTomorrow = (budgetIncome - oneoffSum) / Math.max(1, daysRemaining - 1);
+    const dailyNow = baselineDaily + remainingAdjust;            // фактический дневной темп сейчас
+    const effectiveLiving = livingPool;
 
     const spentToday = entries.filter((e) => e.date === today).reduce((s, e) => s + e.amount, 0);
     const spentBeforeToday = entries.filter((e) => e.date < today).reduce((s, e) => s + e.amount, 0);
     const totalSpent = spentBeforeToday + spentToday;
-    const remainingBudget = effectiveLiving - totalSpent;
+    const remainingBudget = livingPool - totalSpent;
 
     const carryIn = baselineDaily * completedDays - spentBeforeToday;
-    const todayAllowance = baselineDaily + carryIn;
+    const todayAllowance = baselineDaily + carryIn + remainingAdjust;
     const leftToday = todayAllowance - spentToday;
     const carryTomorrow = carryIn + (baselineDaily - spentToday);
-    const tomorrowAllowance = carryTomorrow + baselineDaily; // стартовый лимит завтра
+    const tomorrowAllowance = carryTomorrow + baselineDaily + remainingAdjustTomorrow; // стартовый лимит завтра
 
     let projectedTotal;
     if (completedDays >= 1) { const avg = spentBeforeToday / completedDays; projectedTotal = spentBeforeToday + avg * daysRemaining; }
@@ -227,11 +231,11 @@ function Tracker({ session, accent, setAccent }) {
     const projectedLeftover = effectiveLiving - projectedTotal;
 
     const ratio = todayAllowance > 0 ? spentToday / todayAllowance : (spentToday > 0 ? 1.2 : 0);
-    const status = ratio > 1 ? "red" : ratio > 0.75 ? "amber" : "green";
+    const status = leftToday < -0.005 || todayAllowance < -0.005 ? "red" : ratio > 1 ? "red" : ratio > 0.75 ? "amber" : "green";
     const endISO = addDays(period.startISO, period.totalDays - 1);
 
     return { today, todayIndex, daysRemaining, spentToday, totalSpent, remainingBudget, budgetIncome,
-      effectiveLiving, baseLiving, reservedSavings, oneoffSpent: -oneoffSavings, baselineDaily, carryIn, todayAllowance, leftToday, carryTomorrow, tomorrowAllowance,
+      effectiveLiving, reservedSavings, oneoffSpent: -oneoffSavings, baselineDaily, dailyNow, carryIn, todayAllowance, leftToday, carryTomorrow, tomorrowAllowance,
       projectedTotal, projectedLeftover, ratio, status, endISO };
   }, [period, entries, incomes, savingsTotal, externalSavings, oneoffSavings]);
 
@@ -530,7 +534,7 @@ function BudgetOverview({ m, period, input, setInput, addSpend, entries, removeE
         )}
 
         <div style={{ display: "flex", width: "100%", marginTop: 16, gap: 8 }}>
-          {[["база", eur(m.baselineDaily)], ["потрачено", eur(m.spentToday)],
+          {[["база", eur(m.dailyNow)], ["потрачено", eur(m.spentToday)],
             ...(m.daysRemaining > 1 ? [["завтра", signEur(m.tomorrowAllowance)]] : [])].map(([k, v], i) => (
             <div key={i} style={{ flex: 1, textAlign: "center", background: C.surface2, borderRadius: 10, padding: "8px 4px" }}>
               <div style={{ fontSize: 10, color: C.faint, textTransform: "uppercase", letterSpacing: 0.5 }}>{k}</div>
@@ -1479,7 +1483,7 @@ function FeedScreen({ feedSub, setFeedSub, period, entries, incomes, contribs, m
 
       {/* tiles */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 12 }}>
-        <Tile id="breakdown" title="Расклад" value={eur(m.effectiveLiving)} sub={`на жизнь · ${eur(m.baselineDaily)}/день`} />
+        <Tile id="breakdown" title="Расклад" value={eur(m.effectiveLiving)} sub={`на жизнь · ${eur(m.dailyNow)}/день`} />
         <Tile id="forecast" title="Прогноз" value={eur(m.projectedLeftover)} color={m.projectedLeftover < 0 ? C.red : C.green} sub="остаток к концу" />
         <Tile id="oneoff" title="Разовые" value={oneoffTotal > 0.005 ? "−" + eur(oneoffTotal) : "0 €"} color={oneoffTotal > 0.005 ? C.amber : C.muted} sub={`${extras.length + (contribs || []).filter((c) => c.source === "oneoff").length} шт.`} />
         <Tile id="cal" title="Календарь" value={prettyDate(m.today)} sub="дни месяца" />
@@ -1521,7 +1525,7 @@ function FeedScreen({ feedSub, setFeedSub, period, entries, incomes, contribs, m
           <BreakdownCard period={period} income={period.income} budgetIncome={m.budgetIncome}
             obligations={period.obligations} extras={period.extras} ownSavings={m.reservedSavings}
             oneoffSpent={m.oneoffSpent} extraSavings={Math.max(0, savingsTotal - m.reservedSavings)}
-            living={m.effectiveLiving} daily={m.baselineDaily} />
+            living={m.effectiveLiving} daily={m.dailyNow} />
         </Sheet>
       )}
       {open === "oneoff" && (
