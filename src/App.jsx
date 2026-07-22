@@ -209,9 +209,17 @@ function Tracker({ session, accent, setAccent }) {
       .reduce((s, i) => s + i.amount, 0);
     const livingPool = coreLiving + budgetIncome - oneoffSum;   // итоговый котёл на жизнь
     const baselineDaily = coreLiving / period.totalDays;         // чистая база
-    const remainingAdjust = (budgetIncome - oneoffSum) / daysRemaining;
-    const remainingAdjustTomorrow = (budgetIncome - oneoffSum) / Math.max(1, daysRemaining - 1);
-    const dailyNow = baselineDaily + remainingAdjust;            // фактический дневной темп сейчас
+
+    // каждый разовый «из жизни» (минус) и доход «в бюджет» (плюс) размазывается
+    // от СВОЕЙ даты до конца периода — без ретро-пересчёта и без утечек
+    const idxOf = (iso) => Math.max(0, Math.min(daysBetween(period.startISO, iso || today), period.totalDays - 1));
+    const flows = [
+      ...(period.extras || []).map((e) => { const i0 = idxOf(e.date); return { i0, share: -((parseNum(e.amount) || 0) / (period.totalDays - i0)) }; }),
+      ...incomes.filter((i) => i.status === "budget" && i.periodId === period.id)
+        .map((i) => { const i0 = idxOf(i.date); return { i0, share: (i.amount || 0) / (period.totalDays - i0) }; }),
+    ];
+    const allowanceForDay = (d) => baselineDaily + flows.reduce((s, f) => s + (d >= f.i0 ? f.share : 0), 0);
+    const dailyNow = allowanceForDay(todayIndex);
     const effectiveLiving = livingPool;
 
     const spentToday = entries.filter((e) => e.date === today).reduce((s, e) => s + e.amount, 0);
@@ -219,11 +227,13 @@ function Tracker({ session, accent, setAccent }) {
     const totalSpent = spentBeforeToday + spentToday;
     const remainingBudget = livingPool - totalSpent;
 
-    const carryIn = baselineDaily * completedDays - spentBeforeToday;
-    const todayAllowance = baselineDaily + carryIn + remainingAdjust;
+    let pastAllowance = 0;
+    for (let d = 0; d < completedDays; d++) pastAllowance += allowanceForDay(d);
+    const carryIn = pastAllowance - spentBeforeToday;
+    const todayAllowance = dailyNow + carryIn;
     const leftToday = todayAllowance - spentToday;
-    const carryTomorrow = carryIn + (baselineDaily - spentToday);
-    const tomorrowAllowance = carryTomorrow + baselineDaily + remainingAdjustTomorrow; // стартовый лимит завтра
+    const carryTomorrow = leftToday;
+    const tomorrowAllowance = leftToday + allowanceForDay(Math.min(todayIndex + 1, period.totalDays - 1)); // остаток + завтрашний темп
 
     let projectedTotal;
     if (completedDays >= 1) { const avg = spentBeforeToday / completedDays; projectedTotal = spentBeforeToday + avg * daysRemaining; }
