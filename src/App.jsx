@@ -196,27 +196,33 @@ function Tracker({ session, accent, setAccent }) {
     const daysRemaining = Math.max(1, period.totalDays - todayIndex);
     const completedDays = todayIndex;
 
-    // база считается ЧИСТОЙ (без разовых): прошлые дни не переписываются.
-    // разовые «из жизни» и доходы «в бюджет» размазываются только на оставшиеся дни.
-    const ownSavings = savingsTotal - externalSavings;
+    // база считается от копилки НА СТАРТЕ периода: прошлые дни не переписываются.
+    // все движения внутри периода (разовые, доходы «в бюджет», пополнения/снятия копилки)
+    // размазываются от СВОЕЙ даты до конца периода.
+    const inPeriod = contribs.filter((c) => (c.createdAt || "").slice(0, 10) >= period.startISO);
+    const savingsAtStart = savingsTotal - inPeriod.reduce((s, c) => s + c.amount, 0);
+    const periodStartSavings = inPeriod.filter((c) => c.source === "period_start").reduce((s, c) => s + c.amount, 0);
+    const manualMoves = inPeriod.filter((c) => c.source === "manual");
+    const manualSum = manualMoves.reduce((s, c) => s + c.amount, 0);
+    const reservedSavings = period.income > 0 ? savingsAtStart + periodStartSavings : period.reservedSavings;
     const oneoffSum = sumObl(period.extras);
-    const reservedSavings = period.income > 0 ? ownSavings : period.reservedSavings;
     const coreLiving = period.income > 0
-      ? Math.max(0, period.income - sumObl(period.obligations) - ownSavings + oneoffSavings)
+      ? Math.max(0, period.income - sumObl(period.obligations) - savingsAtStart - periodStartSavings)
       : period.livingBudget;
 
     const budgetIncome = incomes.filter((i) => i.status === "budget" && i.periodId === period.id)
       .reduce((s, i) => s + i.amount, 0);
-    const livingPool = coreLiving + budgetIncome - oneoffSum;   // итоговый котёл на жизнь
-    const baselineDaily = coreLiving / period.totalDays;         // чистая база
+    const livingPool = coreLiving + budgetIncome - oneoffSum - manualSum; // итоговый котёл на жизнь
+    const baselineDaily = coreLiving / period.totalDays;                   // чистая база
 
-    // каждый разовый «из жизни» (минус) и доход «в бюджет» (плюс) размазывается
-    // от СВОЕЙ даты до конца периода — без ретро-пересчёта и без утечек
+    // датированные потоки: разовые «из жизни» (−), доходы «в бюджет» (+),
+    // пополнение копилки (−) и снятие из копилки (+) — каждый от своей даты
     const idxOf = (iso) => Math.max(0, Math.min(daysBetween(period.startISO, iso || today), period.totalDays - 1));
     const flows = [
       ...(period.extras || []).map((e) => { const i0 = idxOf(e.date); return { i0, share: -((parseNum(e.amount) || 0) / (period.totalDays - i0)) }; }),
       ...incomes.filter((i) => i.status === "budget" && i.periodId === period.id)
         .map((i) => { const i0 = idxOf(i.date); return { i0, share: (i.amount || 0) / (period.totalDays - i0) }; }),
+      ...manualMoves.map((c) => { const i0 = idxOf((c.createdAt || "").slice(0, 10)); return { i0, share: -(c.amount / (period.totalDays - i0)) }; }),
     ];
     const allowanceForDay = (d) => baselineDaily + flows.reduce((s, f) => s + (d >= f.i0 ? f.share : 0), 0);
     const dailyNow = allowanceForDay(todayIndex);
@@ -247,7 +253,7 @@ function Tracker({ session, accent, setAccent }) {
     return { today, todayIndex, daysRemaining, spentToday, totalSpent, remainingBudget, budgetIncome,
       effectiveLiving, reservedSavings, oneoffSpent: -oneoffSavings, baselineDaily, dailyNow, carryIn, todayAllowance, leftToday, carryTomorrow, tomorrowAllowance,
       projectedTotal, projectedLeftover, ratio, status, endISO };
-  }, [period, entries, incomes, savingsTotal, externalSavings, oneoffSavings]);
+  }, [period, entries, incomes, contribs, savingsTotal, externalSavings, oneoffSavings]);
 
 
   // ---- spend handlers ----
@@ -401,7 +407,8 @@ function Tracker({ session, accent, setAccent }) {
     const obl = (draft.obligations || []).filter((o) => (parseNum(o.amount) || 0) > 0)
       .map((o) => ({ name: o.name || "Расход", amount: parseNum(o.amount) || 0, paid: !!o.paid }));
     // для текущего периода "отложено" = то, что уже лежит в копилках (не трогаем, не дублируем)
-    const reserved = inc > 0 ? goals.reduce((s, g) => s + goalBalance(g, contribs), 0) : period.reservedSavings;
+    // «отложено» больше не пересчитывается от живой копилки — математика датированная
+    const reserved = period.reservedSavings;
     const living = inc > 0 ? Math.max(0, inc - sumObl(obl) - sumObl(period.extras) - reserved) : period.livingBudget;
     const patch = {
       label: draft.label || period.label, totalDays: parseInt(draft.totalDays) || period.totalDays,
