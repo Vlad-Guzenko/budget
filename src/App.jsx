@@ -200,14 +200,13 @@ function Tracker({ session, accent, setAccent }) {
     // все движения внутри периода (разовые, доходы «в бюджет», пополнения/снятия копилки)
     // размазываются от СВОЕЙ даты до конца периода.
     const inPeriod = contribs.filter((c) => (c.createdAt || "").slice(0, 10) >= period.startISO);
-    const savingsAtStart = savingsTotal - inPeriod.reduce((s, c) => s + c.amount, 0);
     const periodStartSavings = inPeriod.filter((c) => c.source === "period_start").reduce((s, c) => s + c.amount, 0);
     const manualMoves = inPeriod.filter((c) => c.source === "manual");
     const manualSum = manualMoves.reduce((s, c) => s + c.amount, 0);
-    const reservedSavings = period.income > 0 ? savingsAtStart + periodStartSavings : period.reservedSavings;
+    const reservedSavings = period.income > 0 ? periodStartSavings : period.reservedSavings;
     const oneoffSum = sumObl(period.extras);
     const coreLiving = period.income > 0
-      ? Math.max(0, period.income - sumObl(period.obligations) - savingsAtStart - periodStartSavings)
+      ? Math.max(0, period.income - sumObl(period.obligations) - periodStartSavings)
       : period.livingBudget;
 
     const budgetIncome = incomes.filter((i) => i.status === "budget" && i.periodId === period.id)
@@ -721,6 +720,7 @@ function GoalCard({ goal, contribs, onContribute, onRemoveContribution, onEdit, 
   const [open, setOpen] = useState(false);
   const [amt, setAmt] = useState("");
   const [mode, setMode] = useState(null); // 'add' | 'sub' | 'edit'
+  const [subTarget, setSubTarget] = useState("budget"); // 'budget' | 'out'
   const [enm, setEnm] = useState(goal.name); const [etg, setEtg] = useState(goal.target ?? ""); const [edl, setEdl] = useState(goal.deadline ?? "");
 
   const list = contribs.filter((c) => c.goalId === goal.id);
@@ -734,7 +734,12 @@ function GoalCard({ goal, contribs, onContribute, onRemoveContribution, onEdit, 
   }
 
   const doAdd = async () => { await onContribute(goal.id, amt, null, "manual"); setAmt(""); setMode(null); };
-  const doSub = async () => { const n = parseNum(amt); if (isFinite(n) && n > 0) await onContribute(goal.id, -n, null, "manual"); setAmt(""); setMode(null); };
+  const doSub = async () => {
+    const n = parseNum(amt); if (!isFinite(n) || n <= 0) return;
+    if (subTarget === "budget") await onContribute(goal.id, -n, "Перевод в бюджет", "manual");
+    else await onContribute(goal.id, -n, "Расход из копилки", "oneoff");
+    setAmt(""); setMode(null);
+  };
   const doEdit = async () => { await onEdit(goal, { name: enm || goal.name, target: isFinite(parseNum(etg)) ? parseNum(etg) : null, deadline: edl || null }); setMode(null); };
 
   const srcLabel = { income: "поступление", month_close: "остаток периода", period_start: "из зарплаты", oneoff: "разовый расход", manual: "вручную" };
@@ -780,6 +785,22 @@ function GoalCard({ goal, contribs, onContribute, onRemoveContribution, onEdit, 
             <button onClick={() => setMode(mode === "add" ? null : "add")} style={{ ...miniBtn, flex: 1 }}>Пополнить</button>
             <button onClick={() => setMode(mode === "sub" ? null : "sub")} style={{ ...miniBtn, flex: 1 }}>Снять</button>
           </div>
+          {mode === "sub" && (
+            <>
+              <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+                {[["budget", "В бюджет на жизнь"], ["out", "Просто расход"]].map(([k, t]) => (
+                  <button key={k} onClick={() => setSubTarget(k)}
+                    style={{ ...miniBtn, flex: 1, background: subTarget === k ? "var(--accent, #3B82F6)" : undefined,
+                      color: subTarget === k ? "#fff" : undefined, borderColor: subTarget === k ? "transparent" : undefined }}>{t}</button>
+                ))}
+              </div>
+              <div style={{ fontSize: 11, color: C.faint, marginTop: 6 }}>
+                {subTarget === "budget"
+                  ? "деньги вернутся в котёл на жизнь — база на день вырастет"
+                  : "деньги ушли мимо бюджета — база не изменится"}
+              </div>
+            </>
+          )}
           {(mode === "add" || mode === "sub") && (
             <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
               <input type="number" inputMode="decimal" placeholder="Сумма, €" value={amt} onChange={(e) => setAmt(e.target.value)} style={{ ...inputStyle, flex: 1 }} />
