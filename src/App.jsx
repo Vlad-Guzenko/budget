@@ -1384,7 +1384,7 @@ function AllView({ period, entries, incomes, m, savingsTotal }) {
   const feed = [
     ...entries.map((e) => ({ kind: "spend", date: e.date, amount: -e.amount, title: "Трата" })),
     ...extras.map((e) => ({ kind: "extra", date: e.date, amount: -(parseNum(e.amount) || 0), title: e.name || "Разовый расход" })),
-    ...incomes.map((i) => ({ kind: "income", date: i.date, amount: i.amount, title: i.source || "Поступление", status: i.status })),
+    ...incomes.filter((i) => i.date >= period.startISO || i.status === "pending").map((i) => ({ kind: "income", date: i.date, amount: i.amount, title: i.source || "Поступление", status: i.status })),
   ].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
 
   const tagFor = (f) => f.kind === "extra" ? "разовый"
@@ -1476,7 +1476,7 @@ function FeedScreen({ feedSub, setFeedSub, period, entries, incomes, contribs, m
     ...entries.map((e) => ({ kind: "spend", date: e.date, amount: -e.amount, title: "Трата" })),
     ...extras.map((e) => ({ kind: "extra", date: e.date, amount: -(parseNum(e.amount) || 0), title: e.name || "Разовый расход" })),
     ...(contribs || []).filter((c) => c.source === "oneoff").map((c) => ({ kind: "oneoff", date: (c.createdAt || "").slice(0, 10) || m.today, amount: c.amount, title: c.note || "Разовое из копилки" })),
-    ...incomes.map((i) => ({ kind: "income", date: i.date, amount: i.amount, title: i.source || "Поступление", status: i.status })),
+    ...incomes.filter((i) => i.date >= period.startISO || i.status === "pending").map((i) => ({ kind: "income", date: i.date, amount: i.amount, title: i.source || "Поступление", status: i.status })),
   ].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
   const tagFor = (f) => f.kind === "extra" ? "разовый"
     : f.kind === "oneoff" ? "из копилки"
