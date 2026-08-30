@@ -203,6 +203,9 @@ function Tracker({ session, accent, setAccent }) {
     const periodStartSavings = inPeriod.filter((c) => c.source === "period_start").reduce((s, c) => s + c.amount, 0);
     const manualMoves = inPeriod.filter((c) => c.source === "manual");
     const manualSum = manualMoves.reduce((s, c) => s + c.amount, 0);
+    // «сэкономлено»: перевод излишка прошедших дней в копилку.
+    // уменьшает котёл, но НЕ размазывается по будущим дням — база не меняется.
+    const savedSum = inPeriod.filter((c) => c.source === "saved").reduce((s, c) => s + c.amount, 0);
     const reservedSavings = period.income > 0 ? periodStartSavings : period.reservedSavings;
     const oneoffSum = sumObl(period.extras);
     const coreLiving = period.income > 0
@@ -211,7 +214,7 @@ function Tracker({ session, accent, setAccent }) {
 
     const budgetIncome = incomes.filter((i) => i.status === "budget" && i.periodId === period.id)
       .reduce((s, i) => s + i.amount, 0);
-    const livingPool = coreLiving + budgetIncome - oneoffSum - manualSum; // итоговый котёл на жизнь
+    const livingPool = coreLiving + budgetIncome - oneoffSum - manualSum - savedSum; // итоговый котёл на жизнь
     const baselineDaily = coreLiving / period.totalDays;                   // чистая база
 
     // датированные потоки: разовые «из жизни» (−), доходы «в бюджет» (+),
@@ -234,9 +237,11 @@ function Tracker({ session, accent, setAccent }) {
 
     let pastAllowance = 0;
     for (let d = 0; d < completedDays; d++) pastAllowance += allowanceForDay(d);
-    const carryIn = pastAllowance - spentBeforeToday;
+    const carryIn = pastAllowance - spentBeforeToday - savedSum;
     const todayAllowance = dailyNow + carryIn;
     const leftToday = todayAllowance - spentToday;
+    // излишек = накопленный хвост прошедших дней; его можно забрать в копилку без просадки базы
+    const surplus = Math.max(0, Math.floor((leftToday - dailyNow) * 100) / 100);
     const carryTomorrow = leftToday;
     const tomorrowAllowance = leftToday + allowanceForDay(Math.min(todayIndex + 1, period.totalDays - 1)); // остаток + завтрашний темп
 
@@ -249,7 +254,7 @@ function Tracker({ session, accent, setAccent }) {
     const status = leftToday < -0.005 || todayAllowance < -0.005 ? "red" : ratio > 1 ? "red" : ratio > 0.75 ? "amber" : "green";
     const endISO = addDays(period.startISO, period.totalDays - 1);
 
-    return { today, todayIndex, daysRemaining, spentToday, totalSpent, remainingBudget, budgetIncome,
+    return { today, todayIndex, daysRemaining, spentToday, totalSpent, remainingBudget, budgetIncome, surplus, savedSum,
       effectiveLiving, reservedSavings, oneoffSpent: -oneoffSavings, baselineDaily, dailyNow, carryIn, todayAllowance, leftToday, carryTomorrow, tomorrowAllowance,
       projectedTotal, projectedLeftover, ratio, status, endISO };
   }, [period, entries, incomes, contribs, savingsTotal, externalSavings, oneoffSavings]);
@@ -461,7 +466,7 @@ function Tracker({ session, accent, setAccent }) {
           goals={goals} chargeToGoal={chargeToGoal} onCloseMonth={() => setShowClose(true)} />
       )}
       {nav === "savings" && (
-        <SavingsView goals={goals} contribs={contribs}
+        <SavingsView goals={goals} contribs={contribs} m={m}
           addGoal={addGoal} editGoal={editGoal} archiveGoal={archiveGoal}
           contribute={contribute} removeContribution={removeContribution} setConfirm={setConfirm} />
       )}
@@ -674,10 +679,12 @@ function IncomeView({ incomes, goals, m, addIncome, deleteIncome, routeIncome, s
 }
 
 // ---------- SAVINGS ----------
-function SavingsView({ goals, contribs, addGoal, editGoal, archiveGoal, contribute, removeContribution, setConfirm }) {
+function SavingsView({ goals, contribs, m, addGoal, editGoal, archiveGoal, contribute, removeContribution, setConfirm }) {
   const [creating, setCreating] = useState(false);
   const [nm, setNm] = useState(""); const [tg, setTg] = useState(""); const [dl, setDl] = useState(""); const [sd, setSd] = useState("");
   const total = goals.reduce((s, g) => s + goalBalance(g, contribs), 0);
+  const savedTotal = contribs.filter((c) => c.source === "saved").reduce((s, c) => s + c.amount, 0);
+  const surplus = m ? m.surplus : 0;
 
   const submit = async () => { await addGoal(nm, tg, dl, sd); setNm(""); setTg(""); setDl(""); setSd(""); setCreating(false); };
 
@@ -687,6 +694,11 @@ function SavingsView({ goals, contribs, addGoal, editGoal, archiveGoal, contribu
         <div style={label}>Все накопления</div>
         <div style={{ fontFamily: mono, fontWeight: 700, fontSize: 34, color: C.green, marginTop: 8, letterSpacing: -0.5 }}>{eur(total)}</div>
         <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>сумма по всем копилкам</div>
+        {savedTotal > 0.005 && (
+          <div style={{ fontSize: 12, color: C.green, marginTop: 6 }}>
+            ✨ из них сэкономлено дисциплиной: <b style={{ fontFamily: mono }}>{eur(savedTotal)}</b>
+          </div>
+        )}
       </div>
 
       {!creating ? (
@@ -707,7 +719,7 @@ function SavingsView({ goals, contribs, addGoal, editGoal, archiveGoal, contribu
 
       <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 12 }}>
         {goals.map((g) => (
-          <GoalCard key={g.id} goal={g} contribs={contribs}
+          <GoalCard key={g.id} goal={g} contribs={contribs} surplus={surplus}
             onContribute={contribute} onRemoveContribution={removeContribution}
             onEdit={editGoal} onArchive={archiveGoal} setConfirm={setConfirm} />
         ))}
@@ -716,10 +728,10 @@ function SavingsView({ goals, contribs, addGoal, editGoal, archiveGoal, contribu
   );
 }
 
-function GoalCard({ goal, contribs, onContribute, onRemoveContribution, onEdit, onArchive, setConfirm }) {
+function GoalCard({ goal, contribs, surplus = 0, onContribute, onRemoveContribution, onEdit, onArchive, setConfirm }) {
   const [open, setOpen] = useState(false);
   const [amt, setAmt] = useState("");
-  const [mode, setMode] = useState(null); // 'add' | 'sub' | 'edit'
+  const [mode, setMode] = useState(null); // 'add' | 'sub' | 'edit' | 'save'
   const [subTarget, setSubTarget] = useState("budget"); // 'budget' | 'out'
   const [enm, setEnm] = useState(goal.name); const [etg, setEtg] = useState(goal.target ?? ""); const [edl, setEdl] = useState(goal.deadline ?? "");
 
@@ -741,8 +753,9 @@ function GoalCard({ goal, contribs, onContribute, onRemoveContribution, onEdit, 
     setAmt(""); setMode(null);
   };
   const doEdit = async () => { await onEdit(goal, { name: enm || goal.name, target: isFinite(parseNum(etg)) ? parseNum(etg) : null, deadline: edl || null }); setMode(null); };
+  const doSave = async () => { await onContribute(goal.id, surplus, "Сэкономлено", "saved"); setMode(null); };
 
-  const srcLabel = { income: "поступление", month_close: "остаток периода", period_start: "из зарплаты", oneoff: "разовый расход", manual: "вручную" };
+  const srcLabel = { income: "поступление", month_close: "остаток периода", period_start: "из зарплаты", oneoff: "разовый расход", manual: "вручную", saved: "✨ сэкономлено" };
 
   return (
     <div style={panel}>
@@ -781,6 +794,26 @@ function GoalCard({ goal, contribs, onContribute, onRemoveContribution, onEdit, 
             </div>
           )}
 
+          {surplus >= 0.01 && (
+            <button onClick={() => setMode(mode === "save" ? null : "save")} style={{
+              width: "100%", marginTop: 12, padding: "11px 13px", borderRadius: 12, cursor: "pointer",
+              background: "rgba(52,211,153,0.10)", border: "1px solid rgba(52,211,153,0.35)",
+              color: C.green, fontSize: 13.5, fontWeight: 600, textAlign: "left",
+            }}>
+              ✨ Перевести излишек · {eur(surplus)}
+            </button>
+          )}
+          {mode === "save" && (
+            <div style={{ marginTop: 8, padding: "10px 12px", borderRadius: 12, background: C.surface2, border: `1px solid ${C.border}` }}>
+              <div style={{ fontSize: 11.5, color: C.muted, lineHeight: 1.5 }}>
+                Это сэкономленное за прошедшие дни. Уйдёт в копилку как достижение —
+                база на день <b>не изменится</b>, кольцо сегодня вернётся к дневной норме.
+              </div>
+              <button onClick={doSave} style={{ ...primaryBtn, width: "100%", marginTop: 10, padding: "11px", background: C.green, color: "#08130d" }}>
+                Перевести {eur(surplus)} в «{goal.name}»
+              </button>
+            </div>
+          )}
           <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
             <button onClick={() => setMode(mode === "add" ? null : "add")} style={{ ...miniBtn, flex: 1 }}>Пополнить</button>
             <button onClick={() => setMode(mode === "sub" ? null : "sub")} style={{ ...miniBtn, flex: 1 }}>Снять</button>
@@ -819,7 +852,7 @@ function GoalCard({ goal, contribs, onContribute, onRemoveContribution, onEdit, 
                 <div key={c.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 0", borderTop: `1px solid ${C.border}` }}>
                   <div>
                     <div style={{ fontFamily: mono, fontSize: 15, color: c.amount < 0 ? C.red : C.green }}>{signEur(c.amount)}</div>
-                    <div style={{ fontSize: 11, color: C.faint }}>{srcLabel[c.source] || c.source}{c.note ? " · " + c.note : ""}</div>
+                    <div style={{ fontSize: 11, color: c.source === "saved" ? C.green : C.faint }}>{srcLabel[c.source] || c.source}{c.note ? " · " + c.note : ""}</div>
                   </div>
                   <button onClick={() => onRemoveContribution(c.id)} style={delBtn}>удалить</button>
                 </div>
@@ -1194,7 +1227,7 @@ function CloseMonthModal({ m, goals, contribs, onClose, onConfirm }) {
 }
 
 // ---------- breakdown of income allocation ----------
-function BreakdownCard({ period, income, budgetIncome, obligations, extras, ownSavings, oneoffSpent, extraSavings, living, daily }) {
+function BreakdownCard({ period, income, budgetIncome, obligations, extras, ownSavings, oneoffSpent, extraSavings, living, daily, savedSum = 0 }) {
   const [open, setOpen] = useState(false);
   const [openEx, setOpenEx] = useState(false);
   const obl = obligations || [];
@@ -1242,6 +1275,7 @@ function BreakdownCard({ period, income, budgetIncome, obligations, extras, ownS
           </>
         )}
         {ownSavings > 0.005 && <Row k="Отложено в копилку" v={ownSavings} c={C.green} sign="−" />}
+        {savedSum > 0.005 && <Row k="✨ Сэкономлено в копилку" v={savedSum} c={C.green} sign="−" />}
         {oneoffSpent > 0.005 && <Row k="Разовое из копилки" v={oneoffSpent} c={C.amber} sign="−" />}
         <div style={{ height: 1, background: C.border, margin: "8px 0" }} />
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
@@ -1476,10 +1510,13 @@ function FeedScreen({ feedSub, setFeedSub, period, entries, incomes, contribs, m
     ...entries.map((e) => ({ kind: "spend", date: e.date, amount: -e.amount, title: "Трата" })),
     ...extras.map((e) => ({ kind: "extra", date: e.date, amount: -(parseNum(e.amount) || 0), title: e.name || "Разовый расход" })),
     ...(contribs || []).filter((c) => c.source === "oneoff").map((c) => ({ kind: "oneoff", date: (c.createdAt || "").slice(0, 10) || m.today, amount: c.amount, title: c.note || "Разовое из копилки" })),
+    ...(contribs || []).filter((c) => c.source === "saved" && (c.createdAt || "").slice(0, 10) >= period.startISO)
+      .map((c) => ({ kind: "saved", date: (c.createdAt || "").slice(0, 10) || m.today, amount: c.amount, title: "✨ Сэкономлено" })),
     ...incomes.filter((i) => i.date >= period.startISO || i.status === "pending").map((i) => ({ kind: "income", date: i.date, amount: i.amount, title: i.source || "Поступление", status: i.status })),
   ].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
   const tagFor = (f) => f.kind === "extra" ? "разовый"
     : f.kind === "oneoff" ? "из копилки"
+    : f.kind === "saved" ? "в копилку · база не тронута"
     : f.kind === "income" ? (f.status === "budget" ? "в бюджет" : f.status === "savings" ? "в копилку" : "не распределено") : null;
 
   const Tile = ({ id, title, value, color, sub }) => (
@@ -1563,7 +1600,7 @@ function FeedScreen({ feedSub, setFeedSub, period, entries, incomes, contribs, m
           <BreakdownCard period={period} income={period.income} budgetIncome={m.budgetIncome}
             obligations={period.obligations} extras={period.extras} ownSavings={m.reservedSavings}
             oneoffSpent={m.oneoffSpent} extraSavings={Math.max(0, savingsTotal - m.reservedSavings)}
-            living={m.effectiveLiving} daily={m.dailyNow} />
+            living={m.effectiveLiving} daily={m.dailyNow} savedSum={m.savedSum} />
         </Sheet>
       )}
       {open === "oneoff" && (
