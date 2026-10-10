@@ -22,7 +22,7 @@ const RU_MONTHS = ["янв","фев","мар","апр","мая","июн","июл
 const prettyDate = (iso) => { const d = dateFromISO(iso); return `${d.getDate()} ${RU_MONTHS[d.getMonth()]}`; };
 const eur = (v) => (v < 0 ? "-" : "") + Math.abs(v).toFixed(2).replace(".", ",") + " €";
 const signEur = (v) => (v > 0 ? "+" : v < 0 ? "-" : "") + Math.abs(v).toFixed(2).replace(".", ",") + " €";
-const parseNum = (v) => { const n = parseFloat(String(v).replace(",", ".")); return isFinite(n) ? n : NaN; };
+const parseNum = (v) => { const n = parseFloat(String(v).replace(/\s/g, "").replace(",", ".")); return isFinite(n) ? n : NaN; };
 
 const ACCENTS = [
   { id: "blue", color: "#3B82F6" }, { id: "teal", color: "#28C0B8" },
@@ -570,7 +570,7 @@ function BudgetOverview({ m, period, input, setInput, addSpend, entries, removeE
       <div style={{ ...panel, marginTop: 12 }}>
         <div style={{ ...label, marginBottom: 10 }}>Записать трату</div>
         <div style={{ display: "flex", gap: 8 }}>
-          <input type="number" inputMode="decimal" placeholder="0,00" value={input}
+          <input type="text" inputMode="decimal" placeholder="0,00" value={input}
             onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addSpend(input)}
             style={{ ...inputStyle, flex: 1, fontSize: 20, fontWeight: 600, fontFamily: mono }} />
           <button onClick={() => addSpend(input)} style={{ ...primaryBtn, padding: "0 20px" }}>+ Добавить</button>
@@ -635,7 +635,7 @@ function IncomeView({ incomes, goals, m, addIncome, deleteIncome, routeIncome, s
       ) : (
         <div style={{ ...panel, marginTop: 12 }}>
           <div style={{ ...label, marginBottom: 10 }}>Новое поступление</div>
-          <input type="number" inputMode="decimal" placeholder="Сумма, €" value={amount}
+          <input type="text" inputMode="decimal" placeholder="Сумма, €" value={amount}
             onChange={(e) => setAmount(e.target.value)} style={{ ...inputStyle, fontSize: 20, fontWeight: 600 }} />
           <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={{ ...inputStyle, marginTop: 10 }} />
           <input type="text" placeholder="Источник (необязательно): подарок, бонус…" value={source}
@@ -707,9 +707,9 @@ function SavingsView({ goals, contribs, m, addGoal, editGoal, archiveGoal, contr
         <div style={{ ...panel, marginTop: 12 }}>
           <div style={{ ...label, marginBottom: 10 }}>Новая копилка</div>
           <input type="text" placeholder="Название (Мотоцикл, Отпуск…)" value={nm} onChange={(e) => setNm(e.target.value)} style={inputStyle} />
-          <input type="number" inputMode="decimal" placeholder="Цель, € (необязательно)" value={tg} onChange={(e) => setTg(e.target.value)} style={{ ...inputStyle, marginTop: 10 }} />
+          <input type="text" inputMode="decimal" placeholder="Цель, € (необязательно)" value={tg} onChange={(e) => setTg(e.target.value)} style={{ ...inputStyle, marginTop: 10 }} />
           <input type="date" value={dl} onChange={(e) => setDl(e.target.value)} style={{ ...inputStyle, marginTop: 10 }} />
-          <input type="number" inputMode="decimal" placeholder="Уже накоплено, € (стартовая сумма)" value={sd} onChange={(e) => setSd(e.target.value)} style={{ ...inputStyle, marginTop: 10 }} />
+          <input type="text" inputMode="decimal" placeholder="Уже накоплено, € (стартовая сумма)" value={sd} onChange={(e) => setSd(e.target.value)} style={{ ...inputStyle, marginTop: 10 }} />
           <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
             <button onClick={() => setCreating(false)} style={{ ...chip, flex: 1, padding: "12px" }}>Отмена</button>
             <button onClick={submit} style={{ ...primaryBtn, flex: 1, padding: "12px" }}>Создать</button>
@@ -767,7 +767,7 @@ function GoalCard({ goal, contribs, surplus = 0, onContribute, onRemoveContribut
       {mode === "edit" ? (
         <div style={{ marginTop: 10 }}>
           <input type="text" value={enm} onChange={(e) => setEnm(e.target.value)} placeholder="Название" style={inputStyle} />
-          <input type="number" inputMode="decimal" value={etg} onChange={(e) => setEtg(e.target.value)} placeholder="Цель, € (пусто = без цели)" style={{ ...inputStyle, marginTop: 8 }} />
+          <input type="text" inputMode="decimal" value={etg} onChange={(e) => setEtg(e.target.value)} placeholder="Цель, € (пусто = без цели)" style={{ ...inputStyle, marginTop: 8 }} />
           <input type="date" value={edl || ""} onChange={(e) => setEdl(e.target.value)} style={{ ...inputStyle, marginTop: 8 }} />
           <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
             <button onClick={() => setConfirm({ title: `Удалить копилку «${goal.name}»?`, message: "Копилка и её история взносов исчезнут. Отменить будет нельзя.", confirmText: "Удалить", danger: true, onYes: () => onArchive(goal) })} style={{ ...miniBtn, color: C.red, borderColor: "#3a2626" }}>Удалить копилку</button>
@@ -836,7 +836,7 @@ function GoalCard({ goal, contribs, surplus = 0, onContribute, onRemoveContribut
           )}
           {(mode === "add" || mode === "sub") && (
             <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-              <input type="number" inputMode="decimal" placeholder="Сумма, €" value={amt} onChange={(e) => setAmt(e.target.value)} style={{ ...inputStyle, flex: 1 }} />
+              <input type="text" inputMode="decimal" placeholder="Сумма, €" value={amt} onChange={(e) => setAmt(e.target.value)} style={{ ...inputStyle, flex: 1 }} />
               <button onClick={mode === "add" ? doAdd : doSub} style={{ ...primaryBtn, padding: "0 18px" }}>{mode === "add" ? "＋" : "－"}</button>
             </div>
           )}
@@ -1342,7 +1342,7 @@ function OneoffCard({ extras, addExtra, removeExtra, goals, onCharge }) {
         <div style={{ marginTop: 12 }}>
           <input type="text" placeholder="На что (Родители, билеты…)" value={name} onChange={(e) => setName(e.target.value)} style={inputStyle} />
           <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-            <input type="number" inputMode="decimal" placeholder="Сумма, €" value={amount} onChange={(e) => setAmount(e.target.value)} style={{ ...inputStyle, flex: 1, fontFamily: mono }} />
+            <input type="text" inputMode="decimal" placeholder="Сумма, €" value={amount} onChange={(e) => setAmount(e.target.value)} style={{ ...inputStyle, flex: 1, fontFamily: mono }} />
             <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={{ ...inputStyle, flex: 1 }} />
           </div>
           {hasGoals && (
@@ -1385,7 +1385,7 @@ function ObligationList({ items, onChange, allowPaid }) {
         <div key={i} style={{ display: "flex", gap: 6, marginBottom: 6 }}>
           <input type="text" placeholder="Название" value={o.name} onChange={(e) => upd(i, "name", e.target.value)}
             style={{ ...inputStyle, flex: 1, fontSize: 14, padding: "10px 12px" }} />
-          <input type="number" inputMode="decimal" placeholder="€" value={o.amount} onChange={(e) => upd(i, "amount", e.target.value)}
+          <input type="text" inputMode="decimal" placeholder="€" value={o.amount} onChange={(e) => upd(i, "amount", e.target.value)}
             style={{ ...inputStyle, width: 78, fontSize: 14, padding: "10px 12px", fontFamily: mono }} />
           {allowPaid && (
             <button onClick={() => upd(i, "paid", !o.paid)} aria-label="Оплачено" title="Отметить оплаченным"
@@ -1477,7 +1477,7 @@ function BalanceCard({ total, savings, obligations, living, pending, hasIncome }
 
       <div style={{ marginTop: 14, borderTop: `1px solid ${C.border}`, paddingTop: 12 }}>
         <div style={{ fontSize: 12, color: C.muted, marginBottom: 6 }}>Сверить с банком</div>
-        <input type="number" inputMode="decimal" placeholder="Баланс в банке, €" value={bank}
+        <input type="text" inputMode="decimal" placeholder="Баланс в банке, €" value={bank}
           onChange={(e) => setBank(e.target.value)} style={inputStyle} />
         {diff !== null && (
           Math.abs(diff) < 0.01 ? (
@@ -1726,7 +1726,7 @@ function AddSheet({ onAdd, onAddExtra, onCharge, goals, onClose }) {
     <div style={{ ...overlay, alignItems: "flex-end", padding: 0 }} onClick={onClose}>
       <div style={sheet} onClick={(e) => e.stopPropagation()}>
         <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 14 }}>Записать трату</div>
-        <input type="number" inputMode="decimal" placeholder="0,00" autoFocus value={amount}
+        <input type="text" inputMode="decimal" placeholder="0,00" autoFocus value={amount}
           onChange={(e) => setAmount(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()}
           style={{ ...inputStyle, fontSize: 24, fontWeight: 700, fontFamily: mono, textAlign: "center" }} />
         <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
@@ -1813,11 +1813,11 @@ function MiniStat({ label, value, color }) {
     </div>
   );
 }
-function Field({ label, value, onChange, type = "number" }) {
+function Field({ label, value, onChange, type = "decimal" }) {
   return (
     <div style={{ marginBottom: 12 }}>
       <div style={{ fontSize: 12, color: C.muted, marginBottom: 5 }}>{label}</div>
-      <input type={type} inputMode={type === "number" ? "decimal" : "text"} value={value}
+      <input type="text" inputMode={type === "decimal" ? "decimal" : "text"} value={value}
         onChange={(e) => onChange(e.target.value)} style={{ ...inputStyle, fontSize: 16 }} />
     </div>
   );
