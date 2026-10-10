@@ -45,9 +45,63 @@ export default function App() {
     const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s ?? null));
     return () => sub.subscription.unsubscribe();
   }, []);
-  if (session === undefined) return <Splash />;
-  if (session === null) return <Auth />;
-  return <Tracker session={session} accent={accent} setAccent={setAccent} />;
+  const body = session === undefined ? <Splash /> : session === null ? <Auth /> : <Tracker session={session} accent={accent} setAccent={setAccent} />;
+  return <>{body}<UpdateBanner /></>;
+}
+
+// ---------- обновление приложения ----------
+// Сборка Vite кладёт в index.html скрипт с хешем. Сравниваем его с тем, что на сервере:
+// отличается — значит, выкатили новую версию, показываем кнопку.
+const currentBuildId = () => {
+  const s = document.querySelector('script[type="module"][src*="/assets/"]');
+  return s ? s.getAttribute("src") : null;
+};
+const fetchBuildId = async () => {
+  const res = await fetch("/index.html?_=" + Date.now(), { cache: "no-store" });
+  if (!res.ok) return null;
+  const html = await res.text();
+  const mm = html.match(/<script[^>]*type="module"[^>]*src="([^"]*\/assets\/[^"]+)"/);
+  return mm ? mm[1] : null;
+};
+const hardReload = async () => {
+  try {
+    if ("serviceWorker" in navigator) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map((r) => r.update().catch(() => {})));
+    }
+    if ("caches" in window) {
+      const keys = await caches.keys();
+      await Promise.all(keys.map((k) => caches.delete(k)));
+    }
+  } catch {}
+  window.location.reload();
+};
+
+function UpdateBanner() {
+  const [available, setAvailable] = useState(false);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (!import.meta.env.PROD) return;
+    const mine = currentBuildId();
+    if (!mine) return;
+    let stop = false;
+    const check = async () => {
+      try { const theirs = await fetchBuildId(); if (!stop && theirs && theirs !== mine) setAvailable(true); } catch {}
+    };
+    check();
+    const onVisible = () => { if (document.visibilityState === "visible") check(); };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", check);
+    const timer = setInterval(check, 5 * 60 * 1000);
+    return () => { stop = true; document.removeEventListener("visibilitychange", onVisible); window.removeEventListener("focus", check); clearInterval(timer); };
+  }, []);
+  if (!available) return null;
+  return (
+    <button onClick={() => { setBusy(true); hardReload(); }} disabled={busy} style={updateBanner} aria-label="Обновить приложение">
+      <Icon name="refresh" size={18} color="#fff" style={busy ? { animation: "spin 1s linear infinite" } : undefined} />
+      {busy ? "Обновляю…" : "Доступна новая версия · Обновить"}
+    </button>
+  );
 }
 
 function Splash() {
@@ -1795,6 +1849,7 @@ function Icon({ name, size = 18, color = "currentColor", style }) {
     edit: <><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></>,
     close: <><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></>,
     plus: <><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></>,
+    refresh: <><polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" /></>,
     check: <polyline points="20 6 9 17 4 12" />,
     trash: <><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></>,
     home: <><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /><polyline points="9 22 9 12 15 12 15 22" /></>,
@@ -1877,5 +1932,9 @@ const fabStyle = { position: "fixed", bottom: "calc(26px + env(safe-area-inset-b
   width: 56, height: 56, borderRadius: "50%", background: "var(--accent, #3B82F6)", border: "3px solid " + C.bg,
   color: "#fff", display: "flex", alignItems: "center", justifyContent: "center",
   boxShadow: "0 8px 20px rgba(59,130,246,.4)", zIndex: 41, cursor: "pointer" };
+const updateBanner = { position: "fixed", top: "calc(12px + env(safe-area-inset-top))", left: "50%", transform: "translateX(-50%)",
+  display: "flex", alignItems: "center", gap: 8, padding: "11px 16px", borderRadius: 999,
+  background: "var(--accent, #3B82F6)", color: "#fff", border: "2px solid " + C.bg, fontWeight: 600, fontSize: 14,
+  boxShadow: "0 8px 20px rgba(0,0,0,.35)", zIndex: 60, cursor: "pointer", whiteSpace: "nowrap" };
 const sheet = { width: "100%", maxWidth: 460, background: C.surface, borderTopLeftRadius: 22, borderTopRightRadius: 22,
   borderTop: `1px solid ${C.border}`, padding: "20px 18px calc(26px + env(safe-area-inset-bottom))", margin: "0 auto" };
