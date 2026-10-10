@@ -371,9 +371,20 @@ function Tracker({ session, accent, setAccent }) {
   // ---- close month / new period (с раскладом дохода) ----
   const closeMonth = async ({ leftoverMove, leftoverGoal, np }) => {
     // np = { label, income, obligations, days, startSavings, startGoal }
-    if (leftoverMove > 0 && leftoverGoal) {
+    // остаток периода нельзя «забывать»: деньги физически остаются на счету,
+    // и если модель их не учтёт — баланс разойдётся с банком.
+    const leftover = m ? Math.round(m.remainingBudget * 100) / 100 : 0;
+    const goalFor = leftoverGoal || goals[0]?.id || null;
+    const moveToGoal = leftover > 0 && goalFor ? Math.min(Math.max(0, leftoverMove), leftover) : 0;
+    if (moveToGoal > 0) {
       await supabase.from("contributions").insert({
-        user_id: uid, goal_id: leftoverGoal, amount: leftoverMove, source: "month_close", note: "Остаток периода",
+        user_id: uid, goal_id: goalFor, amount: moveToGoal, source: "month_close", note: "Остаток периода",
+      });
+    }
+    // перерасход покрывается из копилки
+    if (leftover < -0.005 && goalFor) {
+      await supabase.from("contributions").insert({
+        user_id: uid, goal_id: goalFor, amount: leftover, source: "oneoff", note: "Перерасход периода",
       });
     }
     const inc = parseNum(np.income) || 0;
@@ -383,11 +394,19 @@ function Tracker({ session, accent, setAccent }) {
     const living = Math.max(0, inc - sumObl(obl) - save);
 
     await supabase.from("periods").update({ status: "closed" }).eq("id", period.id);
-    await supabase.from("periods").insert({
+    const { data: newPer } = await supabase.from("periods").insert({
       user_id: uid, label: np.label || "Новый период", living_budget: living,
       total_days: parseInt(np.days) || 30, start_date: todayStr(), status: "active",
       income: inc, obligations: obl, reserved_savings: save,
-    });
+    }).select().single();
+    // неотложенный плюс переходит в бюджет нового периода
+    const carry = Math.round((leftover - moveToGoal) * 100) / 100;
+    if (carry > 0.005 && newPer) {
+      await supabase.from("incomes").insert({
+        user_id: uid, received_on: todayStr(), amount: carry, source: "Остаток прошлого периода",
+        status: "budget", period_id: newPer.id,
+      });
+    }
     if (save > 0 && np.startGoal) {
       await supabase.from("contributions").insert({
         user_id: uid, goal_id: np.startGoal, amount: save, source: "period_start", note: "Из зарплаты",
@@ -1133,8 +1152,8 @@ function GoalPicker({ goals, contribs, onPick, onClose }) {
 }
 
 function CloseMonthModal({ m, goals, contribs, onClose, onConfirm }) {
-  const leftover = Math.max(0, m.remainingBudget);
-  const [move, setMove] = useState(leftover ? leftover.toFixed(2) : "");
+  const leftover = Math.round(m.remainingBudget * 100) / 100;
+  const [move, setMove] = useState(leftover > 0 ? leftover.toFixed(2) : "");
   const [leftoverGoal, setLeftoverGoal] = useState(goals[0]?.id || "");
 
   const [label, setLabel] = useState("");
@@ -1167,7 +1186,13 @@ function CloseMonthModal({ m, goals, contribs, onClose, onConfirm }) {
 
         <div style={{ ...panel, padding: 14, marginBottom: 14 }}>
           <div style={{ fontSize: 12, color: C.muted }}>Остаток текущего периода</div>
-          <div style={{ fontFamily: mono, fontWeight: 700, fontSize: 24, color: leftover > 0 ? C.green : C.muted, marginTop: 4 }}>{eur(leftover)}</div>
+          <div style={{ fontFamily: mono, fontWeight: 700, fontSize: 24, color: leftover > 0 ? C.green : leftover < 0 ? C.red : C.muted, marginTop: 4 }}>{eur(leftover)}</div>
+          {leftover < -0.005 && (
+            <div style={{ fontSize: 12, color: C.muted, marginTop: 6 }}>Перерасход спишется из копилки, чтобы баланс сходился с банком.</div>
+          )}
+          {leftover > 0.005 && (
+            <div style={{ fontSize: 12, color: C.muted, marginTop: 6 }}>Что не отложишь — перейдёт в бюджет нового периода.</div>
+          )}
           {goals.length > 0 && leftover > 0 && (
             <div style={{ marginTop: 10 }}>
               <Field label="Отложить остаток в копилку, €" value={move} onChange={setMove} />
