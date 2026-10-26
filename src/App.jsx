@@ -236,9 +236,10 @@ function Tracker({ session, accent, setAccent }) {
   );
   // разовые расходы, оплаченные «из копилки» (отрицательные взносы source='oneoff').
   // они уменьшают накопления и НЕ должны возвращаться в дневной лимит.
-  const oneoffSavings = useMemo(
-    () => contribs.filter((c) => c.source === "oneoff").reduce((s, c) => s + c.amount, 0),
-    [contribs]
+    const oneoffSavings = useMemo(
+    () => contribs.filter((c) => c.source === "oneoff" && period && (c.createdAt || "").slice(0, 10) >= period.startISO)
+      .reduce((s, c) => s + c.amount, 0),
+    [contribs, period]
   );
 
   // ---- math (envelope + доходы, отправленные в бюджет) ----
@@ -1584,11 +1585,11 @@ function FeedScreen({ feedSub, setFeedSub, period, entries, incomes, contribs, m
   const reservedObl = sumObl(obligations.filter((o) => !o.paid));
   const total = savingsTotal + reservedObl + m.remainingBudget + pending;
   const oneoffTotal = sumObl(extras) + m.oneoffSpent;
-
+  const periodOneoffs = (contribs || []).filter((c) => c.source === "oneoff" && (c.createdAt || "").slice(0, 10) >= period.startISO);
   const feed = [
     ...entries.map((e) => ({ kind: "spend", date: e.date, amount: -e.amount, title: "Трата" })),
     ...extras.map((e) => ({ kind: "extra", date: e.date, amount: -(parseNum(e.amount) || 0), title: e.name || "Разовый расход" })),
-    ...(contribs || []).filter((c) => c.source === "oneoff").map((c) => ({ kind: "oneoff", date: (c.createdAt || "").slice(0, 10) || m.today, amount: c.amount, title: c.note || "Разовое из копилки" })),
+    ...periodOneoffs.map((c) => ({ kind: "oneoff", date: (c.createdAt || "").slice(0, 10) || m.today, amount: c.amount, title: c.note || "Разовое из копилки" })),
     ...(contribs || []).filter((c) => c.source === "saved" && (c.createdAt || "").slice(0, 10) >= period.startISO)
       .map((c) => ({ kind: "saved", date: (c.createdAt || "").slice(0, 10) || m.today, amount: c.amount, title: "✨ Сэкономлено" })),
     ...incomes.filter((i) => i.date >= period.startISO || i.status === "pending").map((i) => ({ kind: "income", date: i.date, amount: i.amount, title: i.source || "Поступление", status: i.status })),
@@ -1639,7 +1640,7 @@ function FeedScreen({ feedSub, setFeedSub, period, entries, incomes, contribs, m
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 12 }}>
         <Tile id="breakdown" title="Расклад" value={eur(m.effectiveLiving)} sub={`на жизнь · ${eur(m.dailyNow)}/день`} />
         <Tile id="forecast" title="Прогноз" value={eur(m.projectedLeftover)} color={m.projectedLeftover < 0 ? C.red : C.green} sub="остаток к концу" />
-        <Tile id="oneoff" title="Разовые" value={oneoffTotal > 0.005 ? "−" + eur(oneoffTotal) : "0 €"} color={oneoffTotal > 0.005 ? C.amber : C.muted} sub={`${extras.length + (contribs || []).filter((c) => c.source === "oneoff").length} шт.`} />
+        <Tile id="oneoff" title="Разовые" value={oneoffTotal > 0.005 ? "−" + eur(oneoffTotal) : "0 €"} color={oneoffTotal > 0.005 ? C.amber : C.muted} sub={`${extras.length + periodOneoffs.length} шт.`} />
         <Tile id="cal" title="Календарь" value={prettyDate(m.today)} sub="дни месяца" />
         <Tile id="chart" title="График" value={eur(m.totalSpent)} sub="всего потрачено" />
         <button onClick={onCloseMonth} style={{
